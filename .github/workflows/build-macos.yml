@@ -1,0 +1,80 @@
+name: Build QEMU (macOS arm64, ppc target)
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "!v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest   # macOS arm64 (Apple Silicon)
+    name: qemu-system-ppc — macOS arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew install \
+            meson ninja pkg-config python@3.12 \
+            glib pixman zstd lzo snappy bzip2 \
+            libslirp usbredir libusb \
+            sdl2 sdl2_image
+
+      - name: Configure (ppc target only, minimal)
+        run: |
+          mkdir build && cd build
+          ../configure \
+            --target-list=ppc-softmmu \
+            --disable-werror \
+            --disable-docs \
+            --disable-gtk \
+            --disable-opengl \
+            --disable-virglrenderer \
+            --disable-spice \
+            --disable-vnc \
+            --enable-cocoa \
+            --enable-slirp \
+            --prefix=$PWD/../install
+
+      - name: Build
+        run: |
+          cd build
+          make -j$(sysctl -n hw.logicalcpu) V=1
+
+      - name: Install
+        run: |
+          cd build
+          make install
+
+      - name: Package artifact
+        run: |
+          cd install
+          # Bundle qemu-system-ppc + required data files
+          mkdir -p bundle/bin bundle/share/qemu
+          cp bin/qemu-system-ppc bundle/bin/
+          # Copy firmware blobs and keymap data
+          cp -r share/qemu/*.bin share/qemu/*.rom share/qemu/keymaps bundle/share/qemu/ 2>/dev/null || true
+          tar -czf ../qemu-ppc-macos-arm64.tar.gz -C bundle .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-ppc-macos-arm64
+          path: qemu-ppc-macos-arm64.tar.gz
+          retention-days: 90
+
+      - name: Publish to GitHub Releases (latest)
+        uses: crowbarmaster/GH-Automatic-Releases@latest
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          prerelease: true
+          automatic_release_tag: "qemu-latest"
+          title: "Latest QEMU (ppc, macOS arm64)"
+          files: qemu-ppc-macos-arm64.tar.gz
