@@ -38,7 +38,6 @@ jobs:
             --disable-virglrenderer \
             --disable-spice \
             --disable-vnc \
-            --disable-blobs \
             --enable-cocoa \
             --enable-slirp \
             --prefix=$PWD/../install
