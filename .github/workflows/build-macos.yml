@@ -12,6 +12,8 @@ jobs:
   build:
     runs-on: macos-latest   # macOS arm64 (Apple Silicon)
     name: qemu-system-ppc — macOS arm64
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
