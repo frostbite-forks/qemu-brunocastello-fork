@@ -382,7 +382,13 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case RBBM_STATUS:
     case GUI_STAT:
-        val = 64; /* free CMDFIFO entries */
+        val = 64; /* free CMDFIFO entries, engine idle */
+        break;
+    case PM4_STAT:
+        val = 0; /* engine idle */
+        break;
+    case PM4_BUFFER_DL_RPTR:
+        val = s->pm4.rptr;
         break;
     case CRTC_H_TOTAL_DISP:
         val = s->regs.crtc_h_total_disp;
@@ -1036,6 +1042,40 @@ static void ati_mm_write(void *opaque, hwaddr addr,
             ati_host_data_flush(s);
         }
         break;
+    /* PM4 / 3D passthrough — ring buffer setup */
+    case PM4_BUFFER_OFFSET:
+        s->pm4.buf_addr = data;
+        break;
+    case PM4_BUFFER_CNTL:
+        /* bits [27:0] = ring size in 4-dword units */
+        s->pm4.buf_size = (data & 0x0fffffffU) * 4;
+        break;
+    case PM4_BUFFER_DL_RPTR_ADDR:
+        s->pm4.rptr_addr = data;
+        break;
+    case PM4_BUFFER_DL_RPTR:
+        s->pm4.rptr = data;
+        break;
+    /* Guest advances write pointer — consume new commands */
+    case PM4_BUFFER_DL_WPTR:
+        s->pm4.wptr = data;
+        ati_3d_flush(s);
+        break;
+    /* FIFO-mode command submission (direct, no ring buffer) */
+    case PM4_FIFO_DATA_EVEN:
+    case PM4_FIFO_DATA_ODD:
+        /* Accumulate into a minimal one-dword ring and flush immediately */
+        s->pm4.buf_addr = 0; /* signal direct-mode to ati_3d_flush */
+        if (s->pm4.sock_fd < 0) {
+            ati_3d_connect(s);
+        }
+        if (s->pm4.sock_fd >= 0) {
+            uint32_t hdr = cpu_to_le32(sizeof(uint32_t));
+            uint32_t val32 = cpu_to_le32((uint32_t)data);
+            send(s->pm4.sock_fd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
+            send(s->pm4.sock_fd, &val32, sizeof(val32), MSG_NOSIGNAL);
+        }
+        break;
     default:
         break;
     }
@@ -1052,6 +1092,9 @@ static void ati_vga_realize(PCIDevice *dev, Error **errp)
     ATIVGAState *s = ATI_VGA(dev);
     VGACommonState *vga = &s->vga;
     I2CBus *i2cbus;
+
+    s->pm4.sock_fd = -1;
+    ati_3d_connect(s); /* connect eagerly; failure is non-fatal */
 
 #ifndef CONFIG_PIXMAN
     if (s->use_pixman != 0) {
@@ -1158,6 +1201,12 @@ static void ati_vga_reset(DeviceState *dev)
     s->host_data.next = 0;
     s->host_data.row = 0;
     s->host_data.col = 0;
+
+    s->pm4.rptr = 0;
+    s->pm4.wptr = 0;
+    s->pm4.buf_addr = 0;
+    s->pm4.buf_size = 0;
+    s->pm4.rptr_addr = 0;
 }
 
 static void ati_vga_exit(PCIDevice *dev)
@@ -1166,6 +1215,7 @@ static void ati_vga_exit(PCIDevice *dev)
 
     timer_del(&s->vblank_timer);
     graphic_console_close(s->vga.con);
+    ati_3d_disconnect(s);
 }
 
 static const Property ati_vga_properties[] = {

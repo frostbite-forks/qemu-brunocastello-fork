@@ -24,8 +24,9 @@ jobs:
         run: |
           brew install \
             meson ninja pkg-config python@3.12 \
-            glib pixman zstd lzo snappy bzip2 \
-            libslirp \
+            glib pixman \
+            gnutls libpng \
+            libslirp libusb \
             sdl2
 
       - name: Configure (ppc target only, minimal)
@@ -41,7 +42,9 @@ jobs:
             --disable-spice \
             --disable-vnc \
             --enable-cocoa \
+            --enable-sdl \
             --enable-slirp \
+            --enable-libusb \
             --prefix=$PWD/../install
 
       - name: Build
