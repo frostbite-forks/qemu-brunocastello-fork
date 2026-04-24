@@ -16,16 +16,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        # No submodules: we don't build firmware ROMs, only qemu-system-ppc
 
       - name: Install dependencies
         run: |
           brew install \
             meson ninja pkg-config python@3.12 \
             glib pixman zstd lzo snappy bzip2 \
-            libslirp usbredir libusb \
-            sdl2 sdl2_image
+            libslirp \
+            sdl2
 
       - name: Configure (ppc target only, minimal)
         run: |
@@ -39,6 +38,7 @@ jobs:
             --disable-virglrenderer \
             --disable-spice \
             --disable-vnc \
+            --disable-blobs \
             --enable-cocoa \
             --enable-slirp \
             --prefix=$PWD/../install
