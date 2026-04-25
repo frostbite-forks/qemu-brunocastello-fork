@@ -36,6 +36,7 @@ jobs:
             --target-list=ppc-softmmu \
             --disable-werror \
             --disable-docs \
+            --enable-trace-backends=log \
             --disable-gtk \
             --disable-opengl \
             --disable-virglrenderer \
