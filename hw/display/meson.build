@@ -59,13 +59,18 @@ system_ss.add(when: 'CONFIG_XLNX_DISPLAYPORT', if_true: files('xlnx_dp.c'))
 
 system_ss.add(when: 'CONFIG_ARTIST', if_true: files('artist.c'))
 
-_ati_metal_src = host_os == 'darwin' ? files('ati_render.m') : []
-_ati_metal_fw  = host_os == 'darwin' ? ['-framework', 'Metal',
-                                         '-framework', 'Cocoa',
-                                         '-framework', 'QuartzCore'] : []
-system_ss.add(when: 'CONFIG_ATI_VGA', if_true: [
-    files('ati.c', 'ati_2d.c', 'ati_3d.c', 'ati_dbg.c') + _ati_metal_src,
-    pixman, _ati_metal_fw])
+_ati_base_src = files('ati.c', 'ati_2d.c', 'ati_3d.c', 'ati_dbg.c')
+if host_os == 'darwin'
+  _ati_metal_dep = declare_dependency(link_args: [
+    '-framework', 'Metal',
+    '-framework', 'Cocoa',
+    '-framework', 'QuartzCore',
+  ])
+  system_ss.add(when: 'CONFIG_ATI_VGA', if_true: [
+      _ati_base_src + files('ati_render.m'), pixman, _ati_metal_dep])
+else
+  system_ss.add(when: 'CONFIG_ATI_VGA', if_true: [_ati_base_src, pixman])
+endif
 
 system_ss.add(when: [pvg, 'CONFIG_MAC_PVG_PCI'],     if_true: [files('apple-gfx.m', 'apple-gfx-pci.m')])
 system_ss.add(when: [pvg, 'CONFIG_MAC_PVG_MMIO'],    if_true: [files('apple-gfx.m', 'apple-gfx-mmio.m')])
