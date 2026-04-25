@@ -17,7 +17,7 @@
 #include "ati_int.h"
 #include "ati_render.h"
 #include "exec/cpu-common.h"
-#include "qemu/bswap.h"
+#include "qemu/bswap.h"   /* cpu_to_le32 for rptr write-back */
 
 #define PM4_MAX_BATCH  16384u   /* dwords per flush segment */
 
@@ -54,11 +54,11 @@ void ati_3d_flush(ATIVGAState *s)
             s->pm4.buf_addr + (uint64_t)rptr * sizeof(uint32_t),
             tmp, bytes);
 
-        /* Guest (PPC) writes big-endian; swap each dword to host LE */
-        for (uint32_t k = 0; k < avail; k++) {
-            tmp[k] = be32_to_cpu(tmp[k]);
-        }
-
+        /*
+         * The NDRV writes ring buffer dwords in LE (EndianU32_NtoL on PPC),
+         * matching ATI hardware convention. No byte-swap needed here;
+         * ati_metal_submit() parses them as LE directly.
+         */
         ati_metal_submit(s->render, tmp, avail);
         g_free(tmp);
 
@@ -69,7 +69,7 @@ void ati_3d_flush(ATIVGAState *s)
 
     /* Echo updated rptr to guest if it requested a write-back address */
     if (s->pm4.rptr_addr) {
-        uint32_t val = cpu_to_be32(s->pm4.rptr);
+        uint32_t val = cpu_to_le32(s->pm4.rptr);
         cpu_physical_memory_write(s->pm4.rptr_addr, &val, sizeof(val));
     }
 }
