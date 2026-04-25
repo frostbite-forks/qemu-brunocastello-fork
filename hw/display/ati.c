@@ -573,6 +573,9 @@ static void ati_mm_write(void *opaque, hwaddr addr,
 
     if (addr < CUR_OFFSET || addr > CUR_CLR1 || ATI_DEBUG_HW_CURSOR) {
         trace_ati_mm_write(size, addr, ati_reg_name(addr & ~3ULL), data);
+        fprintf(stderr, "ati_mm_write: size=%u addr=0x%04"HWADDR_PRIx
+                " (%s) data=0x%"PRIx64"\n",
+                size, addr, ati_reg_name(addr & ~3ULL), data);
     }
     switch (addr) {
     case MM_INDEX:
