@@ -280,6 +280,9 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
     ATIVGAState *s = opaque;
     uint32_t val = 0;
 
+    fprintf(stderr, "ati_mm_read:  size=%u addr=0x%04"HWADDR_PRIx" (%s)\n",
+            size, addr, ati_reg_name(addr & ~3ULL));
+
     switch (addr) {
     case MM_INDEX:
         val = s->regs.mm_index;
@@ -571,11 +574,12 @@ static void ati_mm_write(void *opaque, hwaddr addr,
 {
     ATIVGAState *s = opaque;
 
+    fprintf(stderr, "ati_mm_write: size=%u addr=0x%04"HWADDR_PRIx
+            " (%s) data=0x%"PRIx64"\n",
+            size, addr, ati_reg_name(addr & ~3ULL), data);
+
     if (addr < CUR_OFFSET || addr > CUR_CLR1 || ATI_DEBUG_HW_CURSOR) {
         trace_ati_mm_write(size, addr, ati_reg_name(addr & ~3ULL), data);
-        fprintf(stderr, "ati_mm_write: size=%u addr=0x%04"HWADDR_PRIx
-                " (%s) data=0x%"PRIx64"\n",
-                size, addr, ati_reg_name(addr & ~3ULL), data);
     }
     switch (addr) {
     case MM_INDEX:
