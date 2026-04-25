@@ -1061,21 +1061,13 @@ static void ati_mm_write(void *opaque, hwaddr addr,
         s->pm4.wptr = data;
         ati_3d_flush(s);
         break;
-    /* FIFO-mode command submission (direct, no ring buffer) */
+    /* FIFO-mode: single dword submitted directly (no ring buffer) */
     case PM4_FIFO_DATA_EVEN:
-    case PM4_FIFO_DATA_ODD:
-        /* Accumulate into a minimal one-dword ring and flush immediately */
-        s->pm4.buf_addr = 0; /* signal direct-mode to ati_3d_flush */
-        if (s->pm4.sock_fd < 0) {
-            ati_3d_connect(s);
-        }
-        if (s->pm4.sock_fd >= 0) {
-            uint32_t hdr = cpu_to_le32(sizeof(uint32_t));
-            uint32_t val32 = cpu_to_le32((uint32_t)data);
-            send(s->pm4.sock_fd, &hdr, sizeof(hdr), MSG_NOSIGNAL);
-            send(s->pm4.sock_fd, &val32, sizeof(val32), MSG_NOSIGNAL);
-        }
+    case PM4_FIFO_DATA_ODD: {
+        uint32_t dw = (uint32_t)data;
+        ati_metal_submit(s->render, &dw, 1);
         break;
+    }
     default:
         break;
     }
@@ -1093,8 +1085,7 @@ static void ati_vga_realize(PCIDevice *dev, Error **errp)
     VGACommonState *vga = &s->vga;
     I2CBus *i2cbus;
 
-    s->pm4.sock_fd = -1;
-    ati_3d_connect(s); /* connect eagerly; failure is non-fatal */
+    s->render = NULL;
 
 #ifndef CONFIG_PIXMAN
     if (s->use_pixman != 0) {
@@ -1133,6 +1124,8 @@ static void ati_vga_realize(PCIDevice *dev, Error **errp)
     if (!vga_common_init(vga, OBJECT(s), errp)) {
         return;
     }
+    s->render = ati_metal_init(vga->vram_ptr,
+                               (uint32_t)vga->vram_size_mb << 20);
     vga_init(vga, OBJECT(s), pci_address_space(dev),
              pci_address_space_io(dev), true);
     vga->con = graphic_console_init(DEVICE(s), 0, s->vga.hw_ops, vga);
@@ -1215,7 +1208,8 @@ static void ati_vga_exit(PCIDevice *dev)
 
     timer_del(&s->vblank_timer);
     graphic_console_close(s->vga.con);
-    ati_3d_disconnect(s);
+    ati_metal_destroy(s->render);
+    s->render = NULL;
 }
 
 static const Property ati_vga_properties[] = {

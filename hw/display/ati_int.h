@@ -16,6 +16,7 @@
 #include "hw/display/i2c-ddc.h"
 #include "vga_int.h"
 #include "qom/object.h"
+#include "ati_render.h"
 
 /*#define DEBUG_ATI*/
 
@@ -106,16 +107,14 @@ typedef struct ATIHostDataState {
 } ATIHostDataState;
 
 /*
- * PM4 / 3D passthrough state.
- * Tracks the guest ring buffer and the Unix socket to the host Metal renderer.
+ * PM4 / 3D passthrough state — tracks the guest ring buffer.
  */
 typedef struct ATIPM4State {
-    int      sock_fd;      /* fd of Unix socket to host renderer, -1 = disconnected */
-    uint64_t buf_addr;     /* PM4_BUFFER_OFFSET: guest phys addr of ring buffer */
-    uint32_t buf_size;     /* ring buffer size in dwords */
-    uint32_t rptr;         /* PM4_BUFFER_DL_RPTR: host read pointer (dwords) */
-    uint32_t wptr;         /* PM4_BUFFER_DL_WPTR: guest write pointer (dwords) */
-    uint64_t rptr_addr;    /* PM4_BUFFER_DL_RPTR_ADDR: guest phys addr to echo rptr */
+    uint64_t buf_addr;   /* PM4_BUFFER_OFFSET: guest phys addr of ring buffer */
+    uint32_t buf_size;   /* ring buffer size in dwords */
+    uint32_t rptr;       /* PM4_BUFFER_DL_RPTR: host read pointer (dwords) */
+    uint32_t wptr;       /* PM4_BUFFER_DL_WPTR: guest write pointer (dwords) */
+    uint64_t rptr_addr;  /* PM4_BUFFER_DL_RPTR_ADDR: guest phys addr to echo rptr */
 } ATIPM4State;
 
 struct ATIVGAState {
@@ -139,6 +138,7 @@ struct ATIVGAState {
     ATIVGARegs regs;
     ATIHostDataState host_data;
     ATIPM4State pm4;
+    ATIRenderState *render;  /* inline Metal renderer (NULL on non-darwin) */
 };
 
 const char *ati_reg_name(int num);
@@ -147,8 +147,6 @@ void ati_2d_blt(ATIVGAState *s);
 bool ati_host_data_flush(ATIVGAState *s);
 void ati_host_data_finish(ATIVGAState *s);
 
-void ati_3d_connect(ATIVGAState *s);
-void ati_3d_disconnect(ATIVGAState *s);
 void ati_3d_flush(ATIVGAState *s);
 
 #endif /* ATI_INT_H */
