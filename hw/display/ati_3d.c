@@ -18,6 +18,7 @@
 #include "ati_render.h"
 #include "exec/cpu-common.h"
 #include "qemu/bswap.h"   /* cpu_to_le32 for rptr write-back */
+#include "hw/display/bochs-vbe.h"  /* VBE_DISPI_INDEX_XRES/YRES */
 
 #define PM4_MAX_BATCH  16384u   /* dwords per flush segment */
 
@@ -32,11 +33,12 @@ void ati_3d_flush(ATIVGAState *s)
         return;
     }
 
-    /* Derive framebuffer dimensions from CRTC registers and tell the renderer */
-    uint32_t fb_w = ((s->regs.crtc_h_total_disp >> 16) + 1u) * 8u;
-    uint32_t fb_h =  (s->regs.crtc_v_total_disp >> 16) + 1u;
+    /* Derive framebuffer dimensions from VBE regs (set by ati_vga_switch_mode) */
+    uint32_t fb_w = s->vga.vbe_regs[VBE_DISPI_INDEX_XRES];
+    uint32_t fb_h = s->vga.vbe_regs[VBE_DISPI_INDEX_YRES];
     uint32_t pitch_px = (s->regs.crtc_pitch & 0x7ffu) * 8u;
     uint32_t fb_stride = (pitch_px ? pitch_px : fb_w) * 4u;  /* 32 bpp */
+    if (!fb_w || !fb_h) { s->pm4.rptr = wptr; return; }
     ati_metal_set_fb(s->render, fb_w, fb_h, fb_stride);
 
     while (rptr != wptr) {
