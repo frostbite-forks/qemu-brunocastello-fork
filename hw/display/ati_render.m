@@ -52,6 +52,12 @@
 #define R128_OP_3D_DRAW_IMMD  0x29u
 #define R128_OP_3D_DRAW_INDX  0x2Au
 
+/* Custom ATI3D passthrough opcodes */
+#define ATI_OP_TEXTURE_UPLOAD 0x30u  /* slot,w,h,stride,vram_offset */
+#define ATI_OP_SET_TEXTURE    0x31u  /* slot */
+
+#define ATI_TEX_SLOTS         16u
+
 /* Vertex format bits */
 #define VFMT_Z     (1u << 0)
 #define VFMT_W     (1u << 1)
@@ -84,15 +90,19 @@ typedef struct {
     uint32_t           vert_start;
     uint32_t           vert_count;
     MTLPrimitiveType   prim;
+    uint32_t           tex_slot;
+    bool               has_tex;
 } DrawCmd;
 
 struct ATIRenderState {
     id<MTLDevice>              device;
     id<MTLCommandQueue>        queue;
-    id<MTLRenderPipelineState> pipeline;
+    id<MTLRenderPipelineState> pipeline;       /* vertex color */
+    id<MTLRenderPipelineState> pipeline_tex;   /* texture * vertex color */
     id<MTLDepthStencilState>   depth_state;
     id<MTLTexture>             fb_tex;
     id<MTLTexture>             depth_tex;
+    id<MTLTexture>             tex_pool[ATI_TEX_SLOTS];
     id<MTLBuffer>              vbuf;   /* MAX_VERTS × sizeof(AtiVertex) */
 
     uint8_t  *vram_ptr;
@@ -101,6 +111,7 @@ struct ATIRenderState {
     uint32_t  fb_height;
     uint32_t  fb_stride;  /* bytes per row */
     uint32_t *conv_buf;   /* scratch buffer for BGRA<->guest ARGB conversion */
+    uint32_t  active_tex; /* last slot set by ATI_OP_SET_TEXTURE */
 
     /* 3D state updated by PM4 type-0 register writes */
     uint32_t  vc_fpu_setup;
@@ -121,6 +132,7 @@ static NSString *kShaderSrc = @
 "struct VOut {\n"
 "    float4 pos [[position]];\n"
 "    float4 col;\n"
+"    float2 uv;\n"
 "};\n"
 "\n"
 "vertex VOut vert_main(\n"
@@ -131,36 +143,35 @@ static NSString *kShaderSrc = @
 "    VOut out;\n"
 "    out.pos.x =  2.0 * v[vid].x / fbsz.x - 1.0;\n"
 "    out.pos.y = -2.0 * v[vid].y / fbsz.y + 1.0;\n"
-"    out.pos.z = v[vid].z;\n"   /* depth passed through; 0=near, 1=far */
+"    out.pos.z = v[vid].z;\n"
 "    out.pos.w = 1.0;\n"
 "    out.col   = float4(v[vid].r, v[vid].g, v[vid].b, v[vid].a);\n"
+"    out.uv    = float2(v[vid].u, v[vid].v);\n"
 "    return out;\n"
 "}\n"
 "\n"
 "fragment float4 frag_main(VOut in [[stage_in]]) {\n"
 "    return in.col;\n"
+"}\n"
+"\n"
+"fragment float4 frag_tex(VOut in [[stage_in]],\n"
+"    texture2d<float> tex [[texture(0)]])\n"
+"{\n"
+"    constexpr sampler smp(filter::linear, address::repeat);\n"
+"    return tex.sample(smp, in.uv) * in.col;\n"
 "}\n";
 
 /* ---------- helpers -------------------------------------------------------- */
 
-static id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> dev)
+static id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> dev,
+                                                 id<MTLLibrary> lib)
 {
     NSError *err = nil;
-    id<MTLLibrary> lib = [dev newLibraryWithSource:kShaderSrc
-                                           options:nil
-                                             error:&err];
-    if (!lib) {
-        NSLog(@"ati_render: shader error: %@", err);
-        return nil;
-    }
-
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction   = [lib newFunctionWithName:@"vert_main"];
     d.fragmentFunction = [lib newFunctionWithName:@"frag_main"];
     d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     d.depthAttachmentPixelFormat      = MTLPixelFormatDepth32Float;
-
-    /* Standard src-alpha blending */
     d.colorAttachments[0].blendingEnabled             = YES;
     d.colorAttachments[0].rgbBlendOperation           = MTLBlendOperationAdd;
     d.colorAttachments[0].alphaBlendOperation         = MTLBlendOperationAdd;
@@ -168,12 +179,31 @@ static id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> dev)
     d.colorAttachments[0].destinationRGBBlendFactor   = MTLBlendFactorOneMinusSourceAlpha;
     d.colorAttachments[0].sourceAlphaBlendFactor      = MTLBlendFactorOne;
     d.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-
     id<MTLRenderPipelineState> ps =
         [dev newRenderPipelineStateWithDescriptor:d error:&err];
-    if (!ps) {
-        NSLog(@"ati_render: pipeline error: %@", err);
-    }
+    if (!ps) { NSLog(@"ati_render: pipeline error: %@", err); }
+    return ps;
+}
+
+static id<MTLRenderPipelineState> make_pipeline_tex(id<MTLDevice> dev,
+                                                     id<MTLLibrary> lib)
+{
+    NSError *err = nil;
+    MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+    d.vertexFunction   = [lib newFunctionWithName:@"vert_main"];
+    d.fragmentFunction = [lib newFunctionWithName:@"frag_tex"];
+    d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    d.depthAttachmentPixelFormat      = MTLPixelFormatDepth32Float;
+    d.colorAttachments[0].blendingEnabled             = YES;
+    d.colorAttachments[0].rgbBlendOperation           = MTLBlendOperationAdd;
+    d.colorAttachments[0].alphaBlendOperation         = MTLBlendOperationAdd;
+    d.colorAttachments[0].sourceRGBBlendFactor        = MTLBlendFactorSourceAlpha;
+    d.colorAttachments[0].destinationRGBBlendFactor   = MTLBlendFactorOneMinusSourceAlpha;
+    d.colorAttachments[0].sourceAlphaBlendFactor      = MTLBlendFactorOne;
+    d.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    id<MTLRenderPipelineState> ps =
+        [dev newRenderPipelineStateWithDescriptor:d error:&err];
+    if (!ps) { NSLog(@"ati_render: pipeline_tex error: %@", err); }
     return ps;
 }
 
@@ -223,9 +253,18 @@ ATIRenderState *ati_metal_init(uint8_t *vram_ptr, uint32_t vram_size)
         return NULL;
     }
 
-    rs->queue       = [rs->device newCommandQueue];
-    rs->pipeline    = make_pipeline(rs->device);
-    if (!rs->pipeline) { free(rs); return NULL; }
+    rs->queue = [rs->device newCommandQueue];
+
+    {
+        NSError *err = nil;
+        id<MTLLibrary> lib = [rs->device newLibraryWithSource:kShaderSrc
+                                                       options:nil
+                                                         error:&err];
+        if (!lib) { NSLog(@"ati_render: shader error: %@", err); free(rs); return NULL; }
+        rs->pipeline     = make_pipeline(rs->device, lib);
+        rs->pipeline_tex = make_pipeline_tex(rs->device, lib);
+    }
+    if (!rs->pipeline || !rs->pipeline_tex) { free(rs); return NULL; }
     rs->depth_state = make_depth_stencil_state(rs->device);
 
     rs->vbuf = [rs->device newBufferWithLength:MAX_VERTS * sizeof(AtiVertex)
@@ -262,9 +301,14 @@ void ati_metal_set_fb(ATIRenderState *rs,
 void ati_metal_destroy(ATIRenderState *rs)
 {
     if (!rs) return;
+    {
+        uint32_t _i;
+        for (_i = 0; _i < ATI_TEX_SLOTS; _i++) rs->tex_pool[_i] = nil;
+    }
     rs->device      = nil;
     rs->queue       = nil;
     rs->pipeline    = nil;
+    rs->pipeline_tex = nil;
     rs->depth_state = nil;
     rs->fb_tex      = nil;
     rs->depth_tex   = nil;
@@ -345,11 +389,12 @@ void ati_metal_submit(ATIRenderState *rs,
 
     @autoreleasepool {
 
-    AtiVertex *verts  = (AtiVertex *)[rs->vbuf contents];
+    AtiVertex *verts      = (AtiVertex *)[rs->vbuf contents];
     DrawCmd    draws[MAX_DRAWS];
-    uint32_t   ndraw   = 0;
-    uint32_t   ntotal  = 0;  /* vertices written so far */
-    uint32_t   i       = 0;
+    uint32_t   ndraw      = 0;
+    uint32_t   ntotal     = 0;  /* vertices written so far */
+    uint32_t   active_tex = rs->active_tex;
+    uint32_t   i          = 0;
 
     /* ---- first pass: parse PM4, fill vertex buffer and draw list ---- */
     while (i < ndwords) {
@@ -398,8 +443,44 @@ void ati_metal_submit(ATIRenderState *rs,
                     draws[ndraw].vert_start = ntotal;
                     draws[ndraw].vert_count = nvert;
                     draws[ndraw].prim       = map_prim(prim_type);
+                    draws[ndraw].tex_slot   = active_tex;
+                    draws[ndraw].has_tex    = (fmt & VFMT_ST0) != 0;
                     ndraw++;
                     ntotal += nvert;
+                }
+            } else if (op == ATI_OP_SET_TEXTURE && cnt >= 1) {
+                active_tex = dw[0] & (ATI_TEX_SLOTS - 1);
+                rs->active_tex = active_tex;
+
+            } else if (op == ATI_OP_TEXTURE_UPLOAD && cnt >= 5) {
+                uint32_t slot        = dw[0] & (ATI_TEX_SLOTS - 1);
+                uint32_t tw          = dw[1];
+                uint32_t th          = dw[2];
+                uint32_t tstride     = dw[3];
+                uint32_t vram_offset = dw[4];
+
+                if (tw && th && vram_offset + (uint64_t)th * tstride <= rs->vram_size) {
+                    MTLTextureDescriptor *td =
+                        [MTLTextureDescriptor
+                            texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                         width:tw height:th mipmapped:NO];
+                    td.usage       = MTLTextureUsageShaderRead;
+                    td.storageMode = MTLStorageModeShared;
+                    rs->tex_pool[slot] = [rs->device newTextureWithDescriptor:td];
+
+                    /* guest VRAM: big-endian ARGB → Metal BGRA via bswap32 */
+                    uint32_t npx = tw * th;
+                    const uint32_t *src = (const uint32_t *)(rs->vram_ptr + vram_offset);
+                    uint32_t *tmp = (uint32_t *)malloc(npx * sizeof(uint32_t));
+                    if (tmp) {
+                        for (uint32_t _p = 0; _p < npx; _p++)
+                            tmp[_p] = __builtin_bswap32(src[_p]);
+                        MTLRegion full = MTLRegionMake2D(0, 0, tw, th);
+                        [rs->tex_pool[slot] replaceRegion:full mipmapLevel:0
+                                                withBytes:tmp bytesPerRow:tstride];
+                        free(tmp);
+                    }
+                    NSLog(@"ati_render: texture slot %u uploaded %ux%u", slot, tw, th);
                 }
             }
             /* 3D_DRAW_VBUF / 3D_DRAW_INDX: vertices in VRAM — not yet */
@@ -454,7 +535,6 @@ void ati_metal_submit(ATIRenderState *rs,
     rpd.depthAttachment.clearDepth  = 1.0;
 
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
-    [enc setRenderPipelineState:rs->pipeline];
     [enc setDepthStencilState:rs->depth_state];
     [enc setVertexBuffer:rs->vbuf offset:0 atIndex:0];
 
@@ -462,6 +542,15 @@ void ati_metal_submit(ATIRenderState *rs,
     [enc setVertexBytes:fbsz length:sizeof(fbsz) atIndex:1];
 
     for (uint32_t d = 0; d < ndraw; d++) {
+        bool use_tex = draws[d].has_tex &&
+                       draws[d].tex_slot < ATI_TEX_SLOTS &&
+                       rs->tex_pool[draws[d].tex_slot] != nil;
+        if (use_tex) {
+            [enc setRenderPipelineState:rs->pipeline_tex];
+            [enc setFragmentTexture:rs->tex_pool[draws[d].tex_slot] atIndex:0];
+        } else {
+            [enc setRenderPipelineState:rs->pipeline];
+        }
         [enc drawPrimitives:draws[d].prim
                 vertexStart:draws[d].vert_start
                 vertexCount:draws[d].vert_count];
