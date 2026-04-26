@@ -382,6 +382,14 @@ void ati_metal_submit(ATIRenderState *rs,
         }
     }
 
+    /* Dump raw PM4 dwords to diagnose parse failures */
+    {
+        NSMutableString *s = [NSMutableString stringWithFormat:@"ati_render: %u dwords:", ndwords];
+        for (uint32_t _d = 0; _d < ndwords && _d < 16; _d++) {
+            [s appendFormat:@" %08x", pm4[_d]];
+        }
+        NSLog(@"%@", s);
+    }
     NSLog(@"ati_render: ndraw=%u ntotal=%u", ndraw, ntotal);
     if (!ndraw) return;
 
