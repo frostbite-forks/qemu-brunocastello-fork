@@ -112,7 +112,7 @@ static NSString *kShaderSrc = @
 "\n"
 "struct AtiVertex {\n"
 "    float2 pos;\n"
-"    float4 col;\n"
+"    float r, g, b, a;\n"   /* 4 separate floats: no float4 padding, matches 32-byte C struct */
 "    float2 uv;\n"
 "};\n"
 "\n"
@@ -131,7 +131,7 @@ static NSString *kShaderSrc = @
 "    out.pos.y = -2.0 * v[vid].pos.y / fbsz.y + 1.0;\n"
 "    out.pos.z = 0.0;\n"
 "    out.pos.w = 1.0;\n"
-"    out.col   = v[vid].col;\n"
+"    out.col   = float4(v[vid].r, v[vid].g, v[vid].b, v[vid].a);\n"
 "    return out;\n"
 "}\n"
 "\n"
