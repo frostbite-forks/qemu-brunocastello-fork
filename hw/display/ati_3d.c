@@ -17,7 +17,7 @@
 #include "ati_int.h"
 #include "ati_render.h"
 #include "exec/cpu-common.h"
-#include "exec/memory.h"           /* memory_region_set_dirty */
+#include "system/memory.h"         /* memory_region_set_dirty */
 #include "qemu/bswap.h"   /* cpu_to_le32 for rptr write-back */
 #include "hw/display/bochs-vbe.h"  /* VBE_DISPI_INDEX_XRES/YRES */
 
