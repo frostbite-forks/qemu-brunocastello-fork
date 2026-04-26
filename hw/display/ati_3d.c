@@ -17,6 +17,7 @@
 #include "ati_int.h"
 #include "ati_render.h"
 #include "exec/cpu-common.h"
+#include "exec/memory.h"           /* memory_region_set_dirty */
 #include "qemu/bswap.h"   /* cpu_to_le32 for rptr write-back */
 #include "hw/display/bochs-vbe.h"  /* VBE_DISPI_INDEX_XRES/YRES */
 
@@ -63,6 +64,11 @@ void ati_3d_flush(ATIVGAState *s)
          */
         ati_metal_submit(s->render, tmp, avail);
         g_free(tmp);
+
+        /* Mark framebuffer VRAM dirty so QEMU's display update redraws it.
+         * We wrote pixels directly into vram_ptr, bypassing CPU write tracking. */
+        memory_region_set_dirty(&s->vga.vram, 0,
+                                (hwaddr)fb_h * fb_stride);
 
         rptr = (rptr + avail) % buf_dw;
     }
