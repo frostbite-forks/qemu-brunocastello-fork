@@ -75,10 +75,10 @@
 #define MAX_DRAWS  1024u
 
 typedef struct {
-    float x, y;
+    float x, y, z;    /* screen XY + depth */
     float r, g, b, a;
     float u, v;
-} AtiVertex;  /* 32 bytes — must match Metal shader struct */
+} AtiVertex;  /* 36 bytes — must match Metal shader struct */
 
 typedef struct {
     uint32_t           vert_start;
@@ -90,7 +90,9 @@ struct ATIRenderState {
     id<MTLDevice>              device;
     id<MTLCommandQueue>        queue;
     id<MTLRenderPipelineState> pipeline;
+    id<MTLDepthStencilState>   depth_state;
     id<MTLTexture>             fb_tex;
+    id<MTLTexture>             depth_tex;
     id<MTLBuffer>              vbuf;   /* MAX_VERTS × sizeof(AtiVertex) */
 
     uint8_t  *vram_ptr;
@@ -111,9 +113,9 @@ static NSString *kShaderSrc = @
 "using namespace metal;\n"
 "\n"
 "struct AtiVertex {\n"
-"    float2 pos;\n"
-"    float r, g, b, a;\n"   /* 4 separate floats: no float4 padding, matches 32-byte C struct */
-"    float2 uv;\n"
+"    float x, y, z;\n"       /* 12 bytes — separate floats, no float3 padding */
+"    float r, g, b, a;\n"    /* 16 bytes — matches 36-byte C struct exactly */
+"    float u, v;\n"           /* 8 bytes */
 "};\n"
 "\n"
 "struct VOut {\n"
@@ -127,9 +129,9 @@ static NSString *kShaderSrc = @
 "    constant float2 &fbsz [[buffer(1)]])\n"
 "{\n"
 "    VOut out;\n"
-"    out.pos.x =  2.0 * v[vid].pos.x / fbsz.x - 1.0;\n"
-"    out.pos.y = -2.0 * v[vid].pos.y / fbsz.y + 1.0;\n"
-"    out.pos.z = 0.0;\n"
+"    out.pos.x =  2.0 * v[vid].x / fbsz.x - 1.0;\n"
+"    out.pos.y = -2.0 * v[vid].y / fbsz.y + 1.0;\n"
+"    out.pos.z = v[vid].z;\n"   /* depth passed through; 0=near, 1=far */
 "    out.pos.w = 1.0;\n"
 "    out.col   = float4(v[vid].r, v[vid].g, v[vid].b, v[vid].a);\n"
 "    return out;\n"
@@ -156,6 +158,7 @@ static id<MTLRenderPipelineState> make_pipeline(id<MTLDevice> dev)
     d.vertexFunction   = [lib newFunctionWithName:@"vert_main"];
     d.fragmentFunction = [lib newFunctionWithName:@"frag_main"];
     d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    d.depthAttachmentPixelFormat      = MTLPixelFormatDepth32Float;
 
     /* Standard src-alpha blending */
     d.colorAttachments[0].blendingEnabled             = YES;
@@ -186,6 +189,26 @@ static id<MTLTexture> make_fb_texture(id<MTLDevice> dev, uint32_t w, uint32_t h)
     return [dev newTextureWithDescriptor:td];
 }
 
+static id<MTLTexture> make_depth_texture(id<MTLDevice> dev, uint32_t w, uint32_t h)
+{
+    MTLTextureDescriptor *td =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                          width:w
+                                                         height:h
+                                                      mipmapped:NO];
+    td.usage       = MTLTextureUsageRenderTarget;
+    td.storageMode = MTLStorageModePrivate;  /* GPU-only, no CPU readback needed */
+    return [dev newTextureWithDescriptor:td];
+}
+
+static id<MTLDepthStencilState> make_depth_stencil_state(id<MTLDevice> dev)
+{
+    MTLDepthStencilDescriptor *d = [MTLDepthStencilDescriptor new];
+    d.depthCompareFunction = MTLCompareFunctionLessEqual;
+    d.depthWriteEnabled    = YES;
+    return [dev newDepthStencilStateWithDescriptor:d];
+}
+
 /* ---------- public API ---------------------------------------------------- */
 
 ATIRenderState *ati_metal_init(uint8_t *vram_ptr, uint32_t vram_size)
@@ -200,9 +223,10 @@ ATIRenderState *ati_metal_init(uint8_t *vram_ptr, uint32_t vram_size)
         return NULL;
     }
 
-    rs->queue    = [rs->device newCommandQueue];
-    rs->pipeline = make_pipeline(rs->device);
+    rs->queue       = [rs->device newCommandQueue];
+    rs->pipeline    = make_pipeline(rs->device);
     if (!rs->pipeline) { free(rs); return NULL; }
+    rs->depth_state = make_depth_stencil_state(rs->device);
 
     rs->vbuf = [rs->device newBufferWithLength:MAX_VERTS * sizeof(AtiVertex)
                                        options:MTLResourceStorageModeShared];
@@ -226,6 +250,7 @@ void ati_metal_set_fb(ATIRenderState *rs,
     rs->fb_height = height;
     rs->fb_stride = stride ? stride : width * 4;
     rs->fb_tex    = make_fb_texture(rs->device, width, height);
+    rs->depth_tex = make_depth_texture(rs->device, width, height);
 
     free(rs->conv_buf);
     rs->conv_buf = (uint32_t *)malloc(width * height * sizeof(uint32_t));
@@ -237,11 +262,13 @@ void ati_metal_set_fb(ATIRenderState *rs,
 void ati_metal_destroy(ATIRenderState *rs)
 {
     if (!rs) return;
-    rs->device   = nil;
-    rs->queue    = nil;
-    rs->pipeline = nil;
-    rs->fb_tex   = nil;
-    rs->vbuf     = nil;
+    rs->device      = nil;
+    rs->queue       = nil;
+    rs->pipeline    = nil;
+    rs->depth_state = nil;
+    rs->fb_tex      = nil;
+    rs->depth_tex   = nil;
+    rs->vbuf        = nil;
     free(rs->conv_buf);
     free(rs);
 }
@@ -270,9 +297,9 @@ static void unpack_vertex(const uint32_t *d, uint32_t fmt, AtiVertex *v)
     v->x = *(const float *)&d[off++];
     v->y = *(const float *)&d[off++];
 
-    /* Z */
-    if (fmt & VFMT_Z)  { off++; }
-    if (fmt & VFMT_W)  { off++; }
+    v->z = 0.5f;  /* default mid-depth if no Z in packet */
+    if (fmt & VFMT_Z) { v->z = *(const float *)&d[off++]; }
+    if (fmt & VFMT_W) { off++; }
 
     /* Packed ARGB colour */
     v->r = v->g = v->b = 1.0f;
@@ -421,9 +448,14 @@ void ati_metal_submit(ATIRenderState *rs,
     rpd.colorAttachments[0].texture     = rs->fb_tex;
     rpd.colorAttachments[0].loadAction  = MTLLoadActionLoad;   /* preserve background */
     rpd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rpd.depthAttachment.texture     = rs->depth_tex;
+    rpd.depthAttachment.loadAction  = MTLLoadActionClear;  /* reset depth each flush */
+    rpd.depthAttachment.storeAction = MTLStoreActionDontCare;
+    rpd.depthAttachment.clearDepth  = 1.0;
 
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
     [enc setRenderPipelineState:rs->pipeline];
+    [enc setDepthStencilState:rs->depth_state];
     [enc setVertexBuffer:rs->vbuf offset:0 atIndex:0];
 
     float fbsz[2] = { (float)rs->fb_width, (float)rs->fb_height };
