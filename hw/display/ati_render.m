@@ -382,6 +382,7 @@ void ati_metal_submit(ATIRenderState *rs,
         }
     }
 
+    NSLog(@"ati_render: ndraw=%u ntotal=%u", ndraw, ntotal);
     if (!ndraw) return;
 
     /* ---- second pass: issue all draws in one command buffer pass ---- */
@@ -414,6 +415,12 @@ void ati_metal_submit(ATIRenderState *rs,
             bytesPerRow:rs->fb_stride
              fromRegion:region
             mipmapLevel:0];
+
+    /* Debug: log first pixel value to verify readback and check format */
+    {
+        uint32_t px = ((uint32_t *)rs->vram_ptr)[0];
+        NSLog(@"ati_render: readback done, vram[0]=0x%08x", px);
+    }
 
     } /* @autoreleasepool */
 }

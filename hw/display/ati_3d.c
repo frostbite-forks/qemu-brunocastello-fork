@@ -41,6 +41,10 @@ void ati_3d_flush(ATIVGAState *s)
     uint32_t pitch_px = (s->regs.crtc_pitch & 0x7ffu) * 8u;
     uint32_t fb_stride = (pitch_px ? pitch_px : fb_w) * 4u;  /* 32 bpp */
     if (!fb_w || !fb_h) { s->pm4.rptr = wptr; return; }
+    fprintf(stderr, "ati_3d: fb=%ux%u stride=%u crtc_offset=0x%x big_endian_fb=%d\n",
+            fb_w, fb_h, fb_stride,
+            s->regs.crtc_offset & 0x07ffffffu,
+            (int)s->vga.big_endian_fb);
     ati_metal_set_fb(s->render, fb_w, fb_h, fb_stride);
 
     while (rptr != wptr) {
