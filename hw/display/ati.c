@@ -301,6 +301,12 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
                 "ati_mm_read: mm_index too small: %u\n", s->regs.mm_index);
         }
         break;
+    case CLOCK_CNTL_INDEX:
+        val = s->regs.clock_cntl_index;
+        break;
+    case CLOCK_CNTL_DATA:
+        val = s->regs.pll_regs[s->regs.clock_cntl_index & 0x3f];
+        break;
     case BIOS_0_SCRATCH ... BUS_CNTL - 1:
     {
         int i = (addr - BIOS_0_SCRATCH) / 4;
@@ -597,6 +603,14 @@ static void ati_mm_write(void *opaque, hwaddr addr,
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
                 "ati_mm_write: mm_index too small: %u\n", s->regs.mm_index);
+        }
+        break;
+    case CLOCK_CNTL_INDEX:
+        s->regs.clock_cntl_index = data;
+        break;
+    case CLOCK_CNTL_DATA:
+        if (s->regs.clock_cntl_index & PLL_WR_EN) {
+            s->regs.pll_regs[s->regs.clock_cntl_index & 0x3f] = data;
         }
         break;
     case BIOS_0_SCRATCH ... BUS_CNTL - 1:
@@ -1140,6 +1154,25 @@ static void ati_vga_realize(PCIDevice *dev, Error **errp)
         vga->cursor_invalidate = ati_cursor_invalidate;
         vga->cursor_draw_line = ati_cursor_draw_line;
     }
+
+    /*
+     * Seed PLL registers with Rage 128 Pro values for ~108 MHz pixel clock
+     * (1280x1024 @ 60 Hz, reference = 14.318 MHz crystal).
+     * The OS 9 ATI NDRV reads these via CLOCK_CNTL_INDEX/DATA to determine
+     * maximum pixel clock and enumerate available display modes.  All-zero
+     * PLL registers cause the driver to report only the current boot mode.
+     *
+     * CLK_PIN_CNTL (0x01): bit0 = crystal oscillator select (14.318 MHz)
+     * PPLL_REF_DIV (0x03): reference divider = 12
+     * PPLL_DIV_3   (0x07): fb_div = 91, post_div = 0  -> ~108.5 MHz
+     *
+     * BIOS_SCRATCH[0]: bit2 = CRT display connected (prevents "no monitor"
+     * fallback that restricts the mode table to a single entry).
+     */
+    s->regs.pll_regs[CLK_PIN_CNTL] = 0x00000001;
+    s->regs.pll_regs[PPLL_REF_DIV] = 12;
+    s->regs.pll_regs[PPLL_DIV_3]   = 91;
+    s->regs.bios_scratch[0]         = 0x00000004; /* CRT connected */
 
     /* ddc, edid */
     i2cbus = i2c_init_bus(DEVICE(s), "ati-vga.ddc");

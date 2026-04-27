@@ -96,6 +96,9 @@ typedef struct ATIVGARegs {
     uint16_t default_sc_bottom;
     uint16_t default_sc_right;
     uint32_t default_tile;
+    /* PLL register file accessed via CLOCK_CNTL_INDEX/DATA */
+    uint32_t clock_cntl_index;
+    uint32_t pll_regs[0x40];
 } ATIVGARegs;
 
 typedef struct ATIHostDataState {
