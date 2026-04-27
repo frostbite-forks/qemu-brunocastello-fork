@@ -34,7 +34,8 @@ ATIRenderState *ati_metal_init(uint8_t *vram_ptr, uint32_t vram_size);
  * guest changes its display mode.
  */
 void ati_metal_set_fb(ATIRenderState *rs,
-                      uint32_t width, uint32_t height, uint32_t stride);
+                      uint32_t width, uint32_t height, uint32_t stride,
+                      uint32_t bpp);
 
 /*
  * Parse and execute a batch of PM4 dwords.
@@ -59,8 +60,8 @@ void ati_metal_destroy(ATIRenderState *rs);
 static inline ATIRenderState *ati_metal_init(uint8_t *v, uint32_t s)
     { (void)v; (void)s; return NULL; }
 static inline void ati_metal_set_fb(ATIRenderState *r,
-    uint32_t w, uint32_t h, uint32_t s)
-    { (void)r; (void)w; (void)h; (void)s; }
+    uint32_t w, uint32_t h, uint32_t s, uint32_t b)
+    { (void)r; (void)w; (void)h; (void)s; (void)b; }
 static inline void ati_metal_submit(ATIRenderState *r,
     const uint32_t *p, uint32_t n)
     { (void)r; (void)p; (void)n; }

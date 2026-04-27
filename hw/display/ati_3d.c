@@ -38,14 +38,17 @@ void ati_3d_flush(ATIVGAState *s)
     /* Derive framebuffer dimensions from VBE regs (set by ati_vga_switch_mode) */
     uint32_t fb_w = s->vga.vbe_regs[VBE_DISPI_INDEX_XRES];
     uint32_t fb_h = s->vga.vbe_regs[VBE_DISPI_INDEX_YRES];
+    uint32_t bpp  = s->vga.vbe_regs[VBE_DISPI_INDEX_BPP];
+    if (!bpp) bpp = 32;
+    uint32_t bypp = (bpp <= 8) ? 1u : (bpp <= 16) ? 2u : 4u;
     uint32_t pitch_px = (s->regs.crtc_pitch & 0x7ffu) * 8u;
-    uint32_t fb_stride = (pitch_px ? pitch_px : fb_w) * 4u;  /* 32 bpp */
+    uint32_t fb_stride = (pitch_px ? pitch_px : fb_w) * bypp;
     if (!fb_w || !fb_h) { s->pm4.rptr = wptr; return; }
-    fprintf(stderr, "ati_3d: fb=%ux%u stride=%u crtc_offset=0x%x big_endian_fb=%d\n",
-            fb_w, fb_h, fb_stride,
+    fprintf(stderr, "ati_3d: fb=%ux%u bpp=%u stride=%u crtc_offset=0x%x big_endian_fb=%d\n",
+            fb_w, fb_h, bpp, fb_stride,
             s->regs.crtc_offset & 0x07ffffffu,
             (int)s->vga.big_endian_fb);
-    ati_metal_set_fb(s->render, fb_w, fb_h, fb_stride);
+    ati_metal_set_fb(s->render, fb_w, fb_h, fb_stride, bpp);
 
     while (rptr != wptr) {
         uint32_t avail = (wptr > rptr)
