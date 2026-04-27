@@ -566,6 +566,9 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
     }
     if (addr < CUR_OFFSET || addr > CUR_CLR1 || ATI_DEBUG_HW_CURSOR) {
         trace_ati_mm_read(size, addr, ati_reg_name(addr & ~3ULL), val);
+        fprintf(stderr, "ati_mm_read:  size=%u addr=0x%04"HWADDR_PRIx
+                " (%s) -> 0x%"PRIx64"\n",
+                size, addr, ati_reg_name(addr & ~3ULL), val);
     }
     return val;
 }
