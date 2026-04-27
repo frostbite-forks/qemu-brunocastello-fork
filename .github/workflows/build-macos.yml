@@ -76,10 +76,13 @@ jobs:
           retention-days: 90
 
       - name: Publish to GitHub Releases (latest)
-        uses: crowbarmaster/GH-Automatic-Releases@latest
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          prerelease: true
-          automatic_release_tag: "qemu-latest"
-          title: "Latest QEMU (ppc, macOS arm64)"
-          files: qemu-ppc-macos-arm64.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete qemu-latest --yes --repo $GITHUB_REPOSITORY 2>/dev/null || true
+          gh release create qemu-latest \
+            --repo $GITHUB_REPOSITORY \
+            --prerelease \
+            --title "Latest QEMU (ppc, macOS arm64)" \
+            --notes "Built from commit $GITHUB_SHA" \
+            qemu-ppc-macos-arm64.tar.gz
