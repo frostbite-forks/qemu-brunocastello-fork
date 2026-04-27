@@ -337,15 +337,19 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
     case GPIO_VGA_DDC ... GPIO_VGA_DDC + 3:
         val = ati_reg_read_offs(s->regs.gpio_vga_ddc,
                                 addr - GPIO_VGA_DDC, size);
+        fprintf(stderr, "ATI GPIO_VGA_DDC rd addr=%03lx -> %08x\n",
+                (unsigned long)addr, (unsigned)val);
         break;
     case GPIO_DVI_DDC ... GPIO_DVI_DDC + 3:
         val = ati_reg_read_offs(s->regs.gpio_dvi_ddc,
                                 addr - GPIO_DVI_DDC, size);
+        fprintf(stderr, "ATI GPIO_DVI_DDC rd addr=%03lx -> %08x\n",
+                (unsigned long)addr, (unsigned)val);
         break;
     case GPIO_MONID ... GPIO_MONID + 3:
         val = ati_reg_read_offs(s->regs.gpio_monid,
                                 addr - GPIO_MONID, size);
-        fprintf(stderr, "ATI GPIO_MONID rd addr=%03lx -> %08x\n",
+        fprintf(stderr, "ATI GPIO_MONID  rd addr=%03lx -> %08x\n",
                 (unsigned long)addr, (unsigned)val);
         break;
     case PALETTE_INDEX:
@@ -694,11 +698,15 @@ static void ati_mm_write(void *opaque, hwaddr addr,
      * the enable bits are changed or output bits changed while enabled.
      */
     case GPIO_VGA_DDC ... GPIO_VGA_DDC + 3:
+        fprintf(stderr, "ATI GPIO_VGA_DDC wr addr=%03lx data=%08x\n",
+                (unsigned long)addr, (unsigned)data);
         if (s->dev_id != PCI_DEVICE_ID_ATI_RAGE128_PF) {
             /* FIXME: Maybe add a property to select VGA or DVI port? */
         }
         break;
     case GPIO_DVI_DDC ... GPIO_DVI_DDC + 3:
+        fprintf(stderr, "ATI GPIO_DVI_DDC wr addr=%03lx data=%08x\n",
+                (unsigned long)addr, (unsigned)data);
         if (s->dev_id != PCI_DEVICE_ID_ATI_RAGE128_PF) {
             ati_reg_write_offs(&s->regs.gpio_dvi_ddc,
                                addr - GPIO_DVI_DDC, data, size);
