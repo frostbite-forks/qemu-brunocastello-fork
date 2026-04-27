@@ -345,6 +345,8 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
     case GPIO_MONID ... GPIO_MONID + 3:
         val = ati_reg_read_offs(s->regs.gpio_monid,
                                 addr - GPIO_MONID, size);
+        qemu_log("ATI GPIO_MONID rd addr=%03lx -> %08x\n",
+                 (unsigned long)addr, (unsigned)val);
         break;
     case PALETTE_INDEX:
         /* FIXME unaligned access */
@@ -710,13 +712,16 @@ static void ati_mm_write(void *opaque, hwaddr addr,
     case GPIO_MONID ... GPIO_MONID + 3:
         /* FIXME What does Radeon have here? */
         if (s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_PF) {
-            /* Rage128p DDC via MONID pins (base=1: SCL=bit2/OE=bit18, SDA=bit1/OE=bit17).
-             * The OS 9 ATI driver never sets BIT(25), so fire on any SCL/SDA OE change. */
             ati_reg_write_offs(&s->regs.gpio_monid,
                                addr - GPIO_MONID, data, size);
+            qemu_log("ATI GPIO_MONID wr addr=%03lx data=%08x -> reg=%08x\n",
+                     (unsigned long)addr, (unsigned)data,
+                     (unsigned)s->regs.gpio_monid);
             if ((addr <= GPIO_MONID + 2 && addr + size > GPIO_MONID + 2) ||
                 (addr == GPIO_MONID && (s->regs.gpio_monid & 0x60000))) {
                 s->regs.gpio_monid = ati_i2c(&s->bbi2c, s->regs.gpio_monid, 1);
+                qemu_log("ATI GPIO_MONID i2c  -> reg=%08x\n",
+                         (unsigned)s->regs.gpio_monid);
             }
         }
         break;
