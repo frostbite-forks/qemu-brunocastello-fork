@@ -737,15 +737,15 @@ static void ati_mm_write(void *opaque, hwaddr addr,
         if (s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_PF) {
             ati_reg_write_offs(&s->regs.gpio_monid,
                                addr - GPIO_MONID, data, size);
+            /* Keep SCL/SDA input bits [9:8] high (floating pull-up = no DDC
+             * device on bus). The ROM NDRV sees NACK, skips DDC, and falls
+             * back to its internal CRT mode table (all depths registered).
+             * The bbi2c bit positions for base=1 don't match Rage128 hardware,
+             * so we skip the I2C simulation entirely. */
+            s->regs.gpio_monid |= (1 << 9) | (1 << 8);
             fprintf(stderr, "ATI GPIO_MONID wr addr=%03lx data=%08x -> reg=%08x\n",
                     (unsigned long)addr, (unsigned)data,
                     (unsigned)s->regs.gpio_monid);
-            if ((addr <= GPIO_MONID + 2 && addr + size > GPIO_MONID + 2) ||
-                (addr == GPIO_MONID && (s->regs.gpio_monid & 0x60000))) {
-                s->regs.gpio_monid = ati_i2c(&s->bbi2c, s->regs.gpio_monid, 1);
-                fprintf(stderr, "ATI GPIO_MONID i2c  -> reg=%08x\n",
-                        (unsigned)s->regs.gpio_monid);
-            }
         }
         break;
     case PALETTE_INDEX ... PALETTE_INDEX + 3:
