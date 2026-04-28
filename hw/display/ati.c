@@ -349,6 +349,11 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
     case GPIO_MONID ... GPIO_MONID + 3:
         val = ati_reg_read_offs(s->regs.gpio_monid,
                                 addr - GPIO_MONID, size);
+        /* Bits [2:0] are monitor sense pins; 0x7 = DDC-capable monitor.
+         * Without this the ROM NDRV sees "no monitor" and skips modes. */
+        if (addr == GPIO_MONID) {
+            val |= 0x07;
+        }
         fprintf(stderr, "ATI GPIO_MONID  rd addr=%03lx -> %08x\n",
                 (unsigned long)addr, (unsigned)val);
         break;
