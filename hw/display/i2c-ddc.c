@@ -80,8 +80,12 @@ static int i2c_ddc_tx(I2CSlave *i2c, uint8_t data)
 
 static void i2c_ddc_init(Object *obj)
 {
-    I2CDDCState *s = I2CDDC(obj);
+    /* EDID is generated in realize, after properties are applied. */
+}
 
+static void i2c_ddc_realize(DeviceState *dev, Error **errp)
+{
+    I2CDDCState *s = I2CDDC(dev);
     qemu_edid_generate(s->edid_blob, sizeof(s->edid_blob), &s->edid_info);
 }
 
@@ -105,6 +109,7 @@ static void i2c_ddc_class_init(ObjectClass *oc, const void *data)
     I2CSlaveClass *isc = I2C_SLAVE_CLASS(oc);
 
     device_class_set_legacy_reset(dc, i2c_ddc_reset);
+    dc->realize = i2c_ddc_realize;
     dc->vmsd = &vmstate_i2c_ddc;
     device_class_set_props(dc, i2c_ddc_properties);
     isc->event = i2c_ddc_event;
