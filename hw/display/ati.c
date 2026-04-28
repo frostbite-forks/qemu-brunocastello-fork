@@ -624,7 +624,14 @@ static void ati_mm_write(void *opaque, hwaddr addr,
         break;
     case CLOCK_CNTL_DATA:
         if (s->regs.clock_cntl_index & PLL_WR_EN) {
-            s->regs.pll_regs[s->regs.clock_cntl_index & 0x3f] = data;
+            uint8_t idx = s->regs.clock_cntl_index & 0x3f;
+            s->regs.pll_regs[idx] = data;
+            /* ROM NDRV writes PPLL_ATOMIC_UPDATE_W and polls until
+             * PPLL_ATOMIC_UPDATE_R clears. Fake the hardware ack
+             * immediately so the NDRV does not spin forever. */
+            if (idx == PPLL_CNTL && (data & PPLL_ATOMIC_UPDATE_W)) {
+                s->regs.pll_regs[PPLL_CNTL] &= ~PPLL_ATOMIC_UPDATE_R;
+            }
         }
         break;
     case BIOS_0_SCRATCH ... BUS_CNTL - 1:
