@@ -703,14 +703,8 @@ static void ati_mm_write(void *opaque, hwaddr addr,
     case GPIO_VGA_DDC ... GPIO_VGA_DDC + 3:
         fprintf(stderr, "ATI GPIO_VGA_DDC wr addr=%03lx data=%08x\n",
                 (unsigned long)addr, (unsigned)data);
-        if (s->dev_id == PCI_DEVICE_ID_ATI_RAGE128_PF) {
-            ati_reg_write_offs(&s->regs.gpio_vga_ddc,
-                               addr - GPIO_VGA_DDC, data, size);
-            if ((addr <= GPIO_VGA_DDC + 2 && addr + size > GPIO_VGA_DDC + 2) ||
-                (addr == GPIO_VGA_DDC && (s->regs.gpio_vga_ddc & 0x30000))) {
-                s->regs.gpio_vga_ddc = ati_i2c(&s->bbi2c,
-                                               s->regs.gpio_vga_ddc, 0);
-            }
+        if (s->dev_id != PCI_DEVICE_ID_ATI_RAGE128_PF) {
+            /* FIXME: Maybe add a property to select VGA or DVI port? */
         }
         break;
     case GPIO_DVI_DDC ... GPIO_DVI_DDC + 3:
