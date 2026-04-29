@@ -138,6 +138,8 @@ struct ATIVGAState {
     MemoryRegion linear_aper;
     MemoryRegion io;
     MemoryRegion mm;
+    MemoryRegion mm_vga_ioport; /* VGA I/O port remapping at BAR2+0x400 */
+    MemoryRegion mm_bochs_vbe;  /* Bochs VBE DISPI interface at BAR2+0x500 */
     ATIVGARegs regs;
     ATIHostDataState host_data;
     ATIPM4State pm4;

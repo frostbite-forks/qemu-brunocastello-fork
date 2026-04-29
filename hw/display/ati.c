@@ -20,8 +20,10 @@
 #include "ati_int.h"
 #include "ati_regs.h"
 #include "vga-access.h"
+#include "vga_int.h"
 #include "hw/core/qdev-properties.h"
 #include "vga_regs.h"
+#include "hw/display/bochs-vbe.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -1142,6 +1144,82 @@ static const MemoryRegionOps ati_mm_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+/*
+ * VGA I/O port remapping and Bochs VBE DISPI MMIO sub-regions for BAR2.
+ * These sit at the same offsets (0x400 and 0x500) as in the standard QEMU
+ * PCI VGA device, so that OpenBIOS vga-mmio-ioc! / vbe-mmio-iow! and the
+ * qemu_vga.ndrv binary running inside Mac OS 9 can talk to VBE DISPI via
+ * BAR2 MMIO — enabling vga-ndrv?=true to deliver 8bpp/16bpp/32bpp modes.
+ */
+
+static uint64_t ati_vga_ioport_read(void *ptr, hwaddr addr, unsigned size)
+{
+    VGACommonState *s = ptr;
+    uint64_t ret = 0;
+    switch (size) {
+    case 1:
+        ret = vga_ioport_read(s, addr + 0x3c0);
+        break;
+    case 2:
+        ret  = vga_ioport_read(s, addr + 0x3c0);
+        ret |= vga_ioport_read(s, addr + 0x3c1) << 8;
+        break;
+    }
+    return ret;
+}
+
+static void ati_vga_ioport_write(void *ptr, hwaddr addr,
+                                 uint64_t val, unsigned size)
+{
+    VGACommonState *s = ptr;
+    switch (size) {
+    case 1:
+        vga_ioport_write(s, addr + 0x3c0, val);
+        break;
+    case 2:
+        vga_ioport_write(s, addr + 0x3c0, val & 0xff);
+        vga_ioport_write(s, addr + 0x3c1, (val >> 8) & 0xff);
+        break;
+    }
+}
+
+static const MemoryRegionOps ati_vga_ioport_ops = {
+    .read = ati_vga_ioport_read,
+    .write = ati_vga_ioport_write,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 2,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+static uint64_t ati_vga_bochs_read(void *ptr, hwaddr addr, unsigned size)
+{
+    VGACommonState *s = ptr;
+    int index = addr >> 1;
+    vbe_ioport_write_index(s, 0, index);
+    return vbe_ioport_read_data(s, 0);
+}
+
+static void ati_vga_bochs_write(void *ptr, hwaddr addr,
+                                uint64_t val, unsigned size)
+{
+    VGACommonState *s = ptr;
+    int index = addr >> 1;
+    vbe_ioport_write_index(s, 0, index);
+    vbe_ioport_write_data(s, 0, val);
+}
+
+static const MemoryRegionOps ati_vga_bochs_ops = {
+    .read = ati_vga_bochs_read,
+    .write = ati_vga_bochs_write,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 2,
+    .impl.max_access_size = 2,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
 static void ati_vga_realize(PCIDevice *dev, Error **errp)
 {
     ATIVGAState *s = ATI_VGA(dev);
@@ -1227,6 +1305,20 @@ static void ati_vga_realize(PCIDevice *dev, Error **errp)
                           "ati.mmregs", 0x4000);
     /* io space is alias to beginning of mmregs */
     memory_region_init_alias(&s->io, OBJECT(s), "ati.io", &s->mm, 0, 0x100);
+
+    /* Overlay standard QEMU PCI VGA MMIO sub-regions so that OpenBIOS
+     * vga-mmio-ioc! (BAR2+0x400) and vbe-mmio-iow! (BAR2+0x500) work,
+     * enabling vga-ndrv?=true to install qemu_vga.ndrv with full depth
+     * switching (8bpp / 16bpp / 32bpp) in Mac OS 9. */
+    memory_region_init_io(&s->mm_vga_ioport, OBJECT(s), &ati_vga_ioport_ops,
+                          &s->vga, "ati.vga-ioports", PCI_VGA_IOPORT_SIZE);
+    memory_region_add_subregion_overlap(&s->mm, PCI_VGA_IOPORT_OFFSET,
+                                        &s->mm_vga_ioport, 1);
+
+    memory_region_init_io(&s->mm_bochs_vbe, OBJECT(s), &ati_vga_bochs_ops,
+                          &s->vga, "ati.bochs-vbe", PCI_VGA_BOCHS_SIZE);
+    memory_region_add_subregion_overlap(&s->mm, PCI_VGA_BOCHS_OFFSET,
+                                        &s->mm_bochs_vbe, 1);
 
     /*
      * The framebuffer is at the beginning of the linear aperture. For
