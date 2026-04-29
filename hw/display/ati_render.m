@@ -110,10 +110,12 @@ struct ATIRenderState {
     uint32_t  fb_width;
     uint32_t  fb_height;
     uint32_t  fb_stride;    /* Metal texture row stride: fb_width * 4 (always BGRA8) */
-    uint32_t  vram_stride;  /* guest VRAM row stride: fb_width * bypp */
-    uint32_t  fb_bpp;       /* guest color depth: 15, 16, or 32 */
-    uint32_t *conv_buf;   /* scratch buffer for BGRA<->guest conversion */
-    uint32_t  active_tex; /* last slot set by ATI_OP_SET_TEXTURE */
+    uint32_t  vram_stride;  /* guest VRAM row stride in bytes (accounts for pitch) */
+    uint32_t  fb_bpp;       /* guest color depth: 8, 15, 16, or 32 */
+    uint32_t  fb_offset;    /* byte offset of framebuffer within VRAM (crtc_offset) */
+    uint32_t *conv_buf;     /* scratch buffer: always fb_width*fb_height BGRA8 pixels */
+    uint8_t   palette[768]; /* 256 × RGB for 8bpp indexed mode */
+    uint32_t  active_tex;   /* last slot set by ATI_OP_SET_TEXTURE */
 
     /* 3D state updated by PM4 type-0 register writes */
     uint32_t  vc_fpu_setup;
@@ -283,26 +285,35 @@ ATIRenderState *ati_metal_init(uint8_t *vram_ptr, uint32_t vram_size)
 
 void ati_metal_set_fb(ATIRenderState *rs,
                       uint32_t width, uint32_t height, uint32_t stride,
-                      uint32_t bpp)
+                      uint32_t bpp, uint32_t fb_offset)
 {
     if (!rs || !width || !height) return;
     if (!bpp) bpp = 32;
     if (rs->fb_width == width && rs->fb_height == height &&
-        rs->fb_bpp == bpp) return;
+        rs->fb_bpp == bpp && rs->fb_offset == fb_offset) return;
 
     rs->fb_width    = width;
     rs->fb_height   = height;
-    rs->fb_stride   = width * 4;            /* Metal texture: always BGRA8 */
-    rs->vram_stride = stride ? stride : width * (bpp <= 16 ? 2u : 4u);
+    rs->fb_stride   = width * 4u;           /* Metal texture: always BGRA8 */
+    rs->vram_stride = stride ? stride
+                             : width * (bpp <= 8 ? 1u : bpp <= 16 ? 2u : 4u);
     rs->fb_bpp      = bpp;
+    rs->fb_offset   = fb_offset;
     rs->fb_tex      = make_fb_texture(rs->device, width, height);
     rs->depth_tex   = make_depth_texture(rs->device, width, height);
 
     free(rs->conv_buf);
     rs->conv_buf = (uint32_t *)malloc(width * height * sizeof(uint32_t));
 
-    NSLog(@"ati_render: framebuffer %ux%u bpp=%u vram_stride=%u",
-          width, height, bpp, rs->vram_stride);
+    NSLog(@"ati_render: framebuffer %ux%u bpp=%u vram_stride=%u offset=%u",
+          width, height, bpp, rs->vram_stride, fb_offset);
+}
+
+void ati_metal_set_palette(ATIRenderState *rs, const uint8_t *pal, uint32_t n)
+{
+    if (!rs || !pal) return;
+    if (n > 256) n = 256;
+    memcpy(rs->palette, pal, n * 3u);
 }
 
 void ati_metal_destroy(ATIRenderState *rs)
@@ -515,29 +526,79 @@ void ati_metal_submit(ATIRenderState *rs,
     if (!ndraw) return;
 
     /* ---- upload current guest VRAM into Metal texture (BGRA8Unorm) ----
-     * 32-bit: guest big-endian ARGB → bswap32 → host LE BGRA8.
-     * 16-bit: guest big-endian xRGB555 → expand to host LE BGRA8. */
+     *  8bpp indexed  : palette-expand using rs->palette[].
+     * 15bpp xRGB1555 : R[14:10] G[9:5]  B[4:0]  — "Thousands of Colors" on Mac.
+     * 16bpp RGB565   : R[15:11] G[10:5] B[4:0]  — rare, but handle correctly.
+     * 32bpp ARGB BE  : bswap32 → host-LE BGRA8Unorm.
+     * All paths are stride-aware; framebuffer starts at vram_ptr + fb_offset. */
     if (rs->conv_buf) {
-        uint32_t npx = rs->fb_width * rs->fb_height;
-        MTLRegion full = MTLRegionMake2D(0, 0, rs->fb_width, rs->fb_height);
-        if (rs->fb_bpp <= 16) {
-            const uint16_t *src16 = (const uint16_t *)rs->vram_ptr;
-            for (uint32_t p = 0; p < npx; p++) {
-                uint16_t px = __builtin_bswap16(src16[p]);
-                uint8_t r = (uint8_t)((px >> 10) & 0x1fu); r = (r << 3) | (r >> 2);
-                uint8_t g = (uint8_t)((px >>  5) & 0x1fu); g = (g << 3) | (g >> 2);
-                uint8_t b = (uint8_t)( px        & 0x1fu); b = (b << 3) | (b >> 2);
-                rs->conv_buf[p] = (0xffu << 24) | ((uint32_t)r << 16) |
-                                  ((uint32_t)g << 8) | b;
+        const uint8_t *vbase = rs->vram_ptr + rs->fb_offset;
+        uint32_t fw = rs->fb_width, fh = rs->fb_height;
+        MTLRegion full = MTLRegionMake2D(0, 0, fw, fh);
+
+        if (rs->fb_bpp <= 8) {
+            /* 8bpp indexed color — expand via palette */
+            for (uint32_t y = 0; y < fh; y++) {
+                const uint8_t *row = vbase + (uint64_t)y * rs->vram_stride;
+                uint32_t *dst = rs->conv_buf + y * fw;
+                for (uint32_t x = 0; x < fw; x++) {
+                    uint32_t idx = row[x];
+                    uint8_t r = rs->palette[idx * 3u + 0u];
+                    uint8_t g = rs->palette[idx * 3u + 1u];
+                    uint8_t b = rs->palette[idx * 3u + 2u];
+                    dst[x] = (0xffu << 24) | ((uint32_t)r << 16) |
+                             ((uint32_t)g << 8) | b;
+                }
+            }
+        } else if (rs->fb_bpp <= 15) {
+            /* 15bpp xRGB1555: bits [14:10]=R [9:5]=G [4:0]=B */
+            for (uint32_t y = 0; y < fh; y++) {
+                const uint16_t *row =
+                    (const uint16_t *)(vbase + (uint64_t)y * rs->vram_stride);
+                uint32_t *dst = rs->conv_buf + y * fw;
+                for (uint32_t x = 0; x < fw; x++) {
+                    uint16_t px = __builtin_bswap16(row[x]);
+                    uint8_t r = (uint8_t)((px >> 10) & 0x1fu);
+                    uint8_t g = (uint8_t)((px >>  5) & 0x1fu);
+                    uint8_t b = (uint8_t)( px        & 0x1fu);
+                    r = (uint8_t)((r << 3) | (r >> 2));
+                    g = (uint8_t)((g << 3) | (g >> 2));
+                    b = (uint8_t)((b << 3) | (b >> 2));
+                    dst[x] = (0xffu << 24) | ((uint32_t)r << 16) |
+                             ((uint32_t)g << 8) | b;
+                }
+            }
+        } else if (rs->fb_bpp == 16) {
+            /* 16bpp RGB565: bits [15:11]=R [10:5]=G [4:0]=B */
+            for (uint32_t y = 0; y < fh; y++) {
+                const uint16_t *row =
+                    (const uint16_t *)(vbase + (uint64_t)y * rs->vram_stride);
+                uint32_t *dst = rs->conv_buf + y * fw;
+                for (uint32_t x = 0; x < fw; x++) {
+                    uint16_t px = __builtin_bswap16(row[x]);
+                    uint8_t r = (uint8_t)((px >> 11) & 0x1fu);
+                    uint8_t g = (uint8_t)((px >>  5) & 0x3fu);
+                    uint8_t b = (uint8_t)( px        & 0x1fu);
+                    r = (uint8_t)((r << 3) | (r >> 2));
+                    g = (uint8_t)((g << 2) | (g >> 4));
+                    b = (uint8_t)((b << 3) | (b >> 2));
+                    dst[x] = (0xffu << 24) | ((uint32_t)r << 16) |
+                             ((uint32_t)g << 8) | b;
+                }
             }
         } else {
-            const uint32_t *src32 = (const uint32_t *)rs->vram_ptr;
-            for (uint32_t p = 0; p < npx; p++)
-                rs->conv_buf[p] = __builtin_bswap32(src32[p]);
+            /* 32bpp: big-endian ARGB → host-LE BGRA8Unorm */
+            for (uint32_t y = 0; y < fh; y++) {
+                const uint32_t *row =
+                    (const uint32_t *)(vbase + (uint64_t)y * rs->vram_stride);
+                uint32_t *dst = rs->conv_buf + y * fw;
+                for (uint32_t x = 0; x < fw; x++)
+                    dst[x] = __builtin_bswap32(row[x]);
+            }
         }
         [rs->fb_tex replaceRegion:full mipmapLevel:0
                         withBytes:rs->conv_buf
-                      bytesPerRow:rs->fb_stride];  /* fb_stride = fb_width * 4 */
+                      bytesPerRow:rs->fb_stride];
     }
 
     /* ---- second pass: issue all draws in one command buffer pass ---- */
@@ -578,44 +639,82 @@ void ati_metal_submit(ATIRenderState *rs,
     [cb waitUntilCompleted];
 
     /* ---- readback rendered pixels into guest VRAM ----
-     * Metal BGRA8 → bswap32 → 32-bit big-endian ARGB, or
-     * Metal BGRA8 → pack → 16-bit big-endian xRGB555. */
+     *  8bpp: skip — indexed color cannot roundtrip through BGRA8 Metal render.
+     * 15bpp xRGB1555: BGRA8 → pack R[14:10] G[9:5] B[4:0] → bswap16 → VRAM.
+     * 16bpp RGB565  : BGRA8 → pack R[15:11] G[10:5] B[4:0] → bswap16 → VRAM.
+     * 32bpp ARGB BE : BGRA8 → bswap32 → VRAM.
+     * All paths are stride-aware; framebuffer starts at vram_ptr + fb_offset. */
     {
         MTLRegion full = MTLRegionMake2D(0, 0, rs->fb_width, rs->fb_height);
-        uint32_t npx = rs->fb_width * rs->fb_height;
         if (rs->conv_buf) {
             [rs->fb_tex getBytes:rs->conv_buf
-                    bytesPerRow:rs->fb_stride  /* fb_stride = fb_width * 4 */
+                    bytesPerRow:rs->fb_stride
                      fromRegion:full
                     mipmapLevel:0];
-            if (rs->fb_bpp <= 16) {
-                uint16_t *dst16 = (uint16_t *)rs->vram_ptr;
-                for (uint32_t p = 0; p < npx; p++) {
-                    uint32_t bgra = rs->conv_buf[p];
-                    uint8_t b8 =  bgra        & 0xffu;
-                    uint8_t g8 = (bgra >>  8) & 0xffu;
-                    uint8_t r8 = (bgra >> 16) & 0xffu;
-                    uint16_t px = ((uint16_t)(r8 >> 3) << 10) |
-                                  ((uint16_t)(g8 >> 3) <<  5) |
-                                   (uint16_t)(b8 >> 3);
-                    dst16[p] = __builtin_bswap16(px);
+
+            uint8_t *vbase = rs->vram_ptr + rs->fb_offset;
+            uint32_t fw = rs->fb_width, fh = rs->fb_height;
+
+            if (rs->fb_bpp <= 8) {
+                /* 8bpp: skip readback — palette round-trip not supported */
+            } else if (rs->fb_bpp <= 15) {
+                /* xRGB1555 */
+                for (uint32_t y = 0; y < fh; y++) {
+                    const uint32_t *src = rs->conv_buf + y * fw;
+                    uint16_t *dst =
+                        (uint16_t *)(vbase + (uint64_t)y * rs->vram_stride);
+                    for (uint32_t x = 0; x < fw; x++) {
+                        uint32_t bgra = src[x];
+                        uint8_t b8 =  bgra        & 0xffu;
+                        uint8_t g8 = (bgra >>  8) & 0xffu;
+                        uint8_t r8 = (bgra >> 16) & 0xffu;
+                        uint16_t px = ((uint16_t)(r8 >> 3) << 10) |
+                                      ((uint16_t)(g8 >> 3) <<  5) |
+                                       (uint16_t)(b8 >> 3);
+                        dst[x] = __builtin_bswap16(px);
+                    }
+                }
+            } else if (rs->fb_bpp == 16) {
+                /* RGB565 */
+                for (uint32_t y = 0; y < fh; y++) {
+                    const uint32_t *src = rs->conv_buf + y * fw;
+                    uint16_t *dst =
+                        (uint16_t *)(vbase + (uint64_t)y * rs->vram_stride);
+                    for (uint32_t x = 0; x < fw; x++) {
+                        uint32_t bgra = src[x];
+                        uint8_t b8 =  bgra        & 0xffu;
+                        uint8_t g8 = (bgra >>  8) & 0xffu;
+                        uint8_t r8 = (bgra >> 16) & 0xffu;
+                        uint16_t px = ((uint16_t)(r8 >> 3) << 11) |
+                                      ((uint16_t)(g8 >> 2) <<  5) |
+                                       (uint16_t)(b8 >> 3);
+                        dst[x] = __builtin_bswap16(px);
+                    }
                 }
             } else {
-                uint32_t *dst32 = (uint32_t *)rs->vram_ptr;
-                for (uint32_t p = 0; p < npx; p++)
-                    dst32[p] = __builtin_bswap32(rs->conv_buf[p]);
+                /* 32bpp ARGB BE */
+                for (uint32_t y = 0; y < fh; y++) {
+                    const uint32_t *src = rs->conv_buf + y * fw;
+                    uint32_t *dst =
+                        (uint32_t *)(vbase + (uint64_t)y * rs->vram_stride);
+                    for (uint32_t x = 0; x < fw; x++)
+                        dst[x] = __builtin_bswap32(src[x]);
+                }
             }
         }
 
-        /* Probe pixel (320,240) — meaningful only when in bounds */
-        if (rs->fb_width > 320 && rs->fb_height > 240) {
+        /* Probe pixel (320,240) for diagnostics */
+        if (rs->fb_width > 320 && rs->fb_height > 240 && rs->fb_bpp > 8) {
+            const uint8_t *vbase = rs->vram_ptr + rs->fb_offset;
             uint32_t probe_px;
             if (rs->fb_bpp <= 16) {
-                uint16_t px16 = __builtin_bswap16(
-                    ((const uint16_t *)rs->vram_ptr)[240 * rs->fb_width + 320]);
-                probe_px = px16;
+                probe_px = __builtin_bswap16(
+                    ((const uint16_t *)(vbase +
+                        (uint64_t)240u * rs->vram_stride))[320]);
             } else {
-                probe_px = ((const uint32_t *)rs->vram_ptr)[240 * rs->fb_width + 320];
+                probe_px =
+                    ((const uint32_t *)(vbase +
+                        (uint64_t)240u * rs->vram_stride))[320];
             }
             NSLog(@"ati_render: readback done, pixel(320,240)=0x%08x", probe_px);
         }

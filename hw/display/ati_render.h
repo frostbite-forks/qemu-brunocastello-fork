@@ -29,13 +29,22 @@ ATIRenderState *ati_metal_init(uint8_t *vram_ptr, uint32_t vram_size);
 /*
  * Update the active framebuffer region inside VRAM.
  * width / height — framebuffer dimensions in pixels.
- * stride         — row stride in bytes (fb_width * 4 for 32 bpp).
+ * stride         — row stride in bytes (guest VRAM bytes per row).
+ * bpp            — guest color depth: 8, 15, 16, or 32.
+ * fb_offset      — byte offset of the framebuffer within VRAM (crtc_offset).
  * Must be called before the first ati_metal_submit() and whenever the
  * guest changes its display mode.
  */
 void ati_metal_set_fb(ATIRenderState *rs,
                       uint32_t width, uint32_t height, uint32_t stride,
-                      uint32_t bpp);
+                      uint32_t bpp, uint32_t fb_offset);
+
+/*
+ * Supply the 256-entry RGB palette used when bpp <= 8.
+ * pal  — 256 × 3 bytes (R, G, B), each 0–255.
+ * n    — number of entries (must be ≤ 256).
+ */
+void ati_metal_set_palette(ATIRenderState *rs, const uint8_t *pal, uint32_t n);
 
 /*
  * Parse and execute a batch of PM4 dwords.
@@ -60,8 +69,11 @@ void ati_metal_destroy(ATIRenderState *rs);
 static inline ATIRenderState *ati_metal_init(uint8_t *v, uint32_t s)
     { (void)v; (void)s; return NULL; }
 static inline void ati_metal_set_fb(ATIRenderState *r,
-    uint32_t w, uint32_t h, uint32_t s, uint32_t b)
-    { (void)r; (void)w; (void)h; (void)s; (void)b; }
+    uint32_t w, uint32_t h, uint32_t s, uint32_t b, uint32_t o)
+    { (void)r; (void)w; (void)h; (void)s; (void)b; (void)o; }
+static inline void ati_metal_set_palette(ATIRenderState *r,
+    const uint8_t *p, uint32_t n)
+    { (void)r; (void)p; (void)n; }
 static inline void ati_metal_submit(ATIRenderState *r,
     const uint32_t *p, uint32_t n)
     { (void)r; (void)p; (void)n; }

@@ -43,12 +43,34 @@ void ati_3d_flush(ATIVGAState *s)
     uint32_t bypp = (bpp <= 8) ? 1u : (bpp <= 16) ? 2u : 4u;
     uint32_t pitch_px = (s->regs.crtc_pitch & 0x7ffu) * 8u;
     uint32_t fb_stride = (pitch_px ? pitch_px : fb_w) * bypp;
+    /* Framebuffer start within VRAM: vbe_start_addr is in 32-bit words */
+    uint32_t fb_offset = s->vga.vbe_start_addr * 4u;
     if (!fb_w || !fb_h) { s->pm4.rptr = wptr; return; }
-    fprintf(stderr, "ati_3d: fb=%ux%u bpp=%u stride=%u crtc_offset=0x%x big_endian_fb=%d\n",
-            fb_w, fb_h, bpp, fb_stride,
-            s->regs.crtc_offset & 0x07ffffffu,
-            (int)s->vga.big_endian_fb);
-    ati_metal_set_fb(s->render, fb_w, fb_h, fb_stride, bpp);
+    fprintf(stderr, "ati_3d: fb=%ux%u bpp=%u stride=%u offset=%u\n",
+            fb_w, fb_h, bpp, fb_stride, fb_offset);
+    ati_metal_set_fb(s->render, fb_w, fb_h, fb_stride, bpp, fb_offset);
+
+    /* Supply palette when running in 8bpp indexed mode */
+    if (bpp <= 8) {
+        uint8_t pal8[768];
+        uint32_t i;
+        for (i = 0; i < 256u; i++) {
+            uint8_t rv = s->vga.palette[i * 3u + 0u];
+            uint8_t gv = s->vga.palette[i * 3u + 1u];
+            uint8_t bv = s->vga.palette[i * 3u + 2u];
+            if (s->vga.dac_8bit) {
+                pal8[i * 3u + 0u] = rv;
+                pal8[i * 3u + 1u] = gv;
+                pal8[i * 3u + 2u] = bv;
+            } else {
+                /* 6-bit DAC: scale 0-63 → 0-255 */
+                pal8[i * 3u + 0u] = (uint8_t)((rv << 2) | (rv >> 4));
+                pal8[i * 3u + 1u] = (uint8_t)((gv << 2) | (gv >> 4));
+                pal8[i * 3u + 2u] = (uint8_t)((bv << 2) | (bv >> 4));
+            }
+        }
+        ati_metal_set_palette(s->render, pal8, 256u);
+    }
 
     while (rptr != wptr) {
         uint32_t avail = (wptr > rptr)
