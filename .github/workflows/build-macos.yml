@@ -1,4 +1,4 @@
-name: Build QEMU (macOS arm64, ppc target)
+name: Build QEMU (macOS x86_64, ppc target)
 
 on:
   push:
@@ -10,8 +10,8 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest   # macOS arm64 (Apple Silicon)
-    name: qemu-system-ppc — macOS arm64
+    runs-on: macos-15-intel   # macOS x86_64 (Intel)
+    name: qemu-system-ppc — macOS x86_64
     permissions:
       contents: write
 
@@ -71,8 +71,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: qemu-ppc-macos-arm64
-          path: qemu-ppc-macos-arm64.tar.gz
+          name: qemu-ppc-macos-x86_64
+          path: qemu-ppc-macos-x86_64.tar.gz
           retention-days: 90
 
       - name: Publish to GitHub Releases (latest)
@@ -83,6 +83,6 @@ jobs:
           gh release create qemu-latest \
             --repo $GITHUB_REPOSITORY \
             --prerelease \
-            --title "Latest QEMU (ppc, macOS arm64)" \
+            --title "Latest QEMU (ppc, macOS x86_64)" \
             --notes "Built from commit $GITHUB_SHA" \
-            qemu-ppc-macos-arm64.tar.gz
+            qemu-ppc-macos-x86_64.tar.gz
