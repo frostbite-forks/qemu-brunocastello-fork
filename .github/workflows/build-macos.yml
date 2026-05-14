@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           brew install \
-            meson ninja pkg-config python-tk@3.12 \
+            meson ninja pkg-config \
             glib pixman \
             gnutls libpng \
             libslirp libusb \
