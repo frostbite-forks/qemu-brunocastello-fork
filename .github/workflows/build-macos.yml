@@ -66,7 +66,7 @@ jobs:
           cp bin/qemu-system-ppc bundle/bin/
           # Copy firmware blobs and keymap data
           cp -r share/qemu/*.bin share/qemu/*.rom share/qemu/keymaps bundle/share/qemu/ 2>/dev/null || true
-          tar -czf ../qemu-ppc-macos-arm64.tar.gz -C bundle .
+          tar -czf ../qemu-ppc-macos-x86_64.tar.gz -C bundle .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
