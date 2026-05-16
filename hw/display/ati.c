@@ -1110,10 +1110,12 @@ static void ati_mm_write(void *opaque, hwaddr addr,
     /* PM4 / 3D passthrough — ring buffer setup */
     case PM4_BUFFER_OFFSET:
         s->pm4.buf_addr = data;
+        fprintf(stderr, "ati_3d: guest init — ring base phys=0x%08x\n", data);
         break;
     case PM4_BUFFER_CNTL:
         /* bits [27:0] = ring size in 4-dword units */
         s->pm4.buf_size = (data & 0x0fffffffU) * 4;
+        fprintf(stderr, "ati_3d: guest init — ring size=%u dwords\n", s->pm4.buf_size);
         break;
     case PM4_BUFFER_DL_RPTR_ADDR:
         s->pm4.rptr_addr = data;
@@ -1204,10 +1206,17 @@ static uint64_t ati_vga_bochs_read(void *ptr, hwaddr addr, unsigned size)
 static void ati_vga_bochs_write(void *ptr, hwaddr addr,
                                 uint64_t val, unsigned size)
 {
-    VGACommonState *s = ptr;
+    VGACommonState *vga = ptr;
+    static bool bar2_printed;
+    if (!bar2_printed) {
+        bar2_printed = true;
+        ATIVGAState *s = container_of(vga, ATIVGAState, vga);
+        uint32_t bar2 = pci_default_read_config(&s->dev, PCI_BASE_ADDRESS_2, 4);
+        fprintf(stderr, "ati: BAR2 phys=0x%08x\n", bar2 & 0xFFFFFFF0u);
+    }
     int index = addr >> 1;
-    vbe_ioport_write_index(s, 0, index);
-    vbe_ioport_write_data(s, 0, val);
+    vbe_ioport_write_index(vga, 0, index);
+    vbe_ioport_write_data(vga, 0, val);
 }
 
 static const MemoryRegionOps ati_vga_bochs_ops = {
