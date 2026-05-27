@@ -512,12 +512,18 @@ static void ppc_core99_init(MachineState *machine)
 
     /* MacOS NDRV VGA driver */
     filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, NDRV_VGA_FILENAME);
+    fprintf(stderr, "ndrv: looking for %s -> %s\n",
+            NDRV_VGA_FILENAME, filename ? filename : "NOT FOUND");
     if (filename) {
         gchar *ndrv_file;
         gsize ndrv_size;
 
         if (g_file_get_contents(filename, &ndrv_file, &ndrv_size, NULL)) {
+            fprintf(stderr, "ndrv: loaded %zu bytes, registering as fw-cfg ndrv/qemu_vga.ndrv\n",
+                    (size_t)ndrv_size);
             fw_cfg_add_file(fw_cfg, "ndrv/qemu_vga.ndrv", ndrv_file, ndrv_size);
+        } else {
+            fprintf(stderr, "ndrv: g_file_get_contents FAILED for %s\n", filename);
         }
         g_free(filename);
     }

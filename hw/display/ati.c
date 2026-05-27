@@ -404,7 +404,12 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     case RBBM_STATUS:
     case GUI_STAT:
-        val = 64; /* free CMDFIFO entries, engine idle */
+        /* Rage 128 RBBM_STATUS bits[6:0] = free CMDFIFO entries (7-bit field,
+         * max 127).  Bit 31 = engine active.  Returning 0x40 (64) was setting
+         * bit 6 which looks like a stalled FIFO to the Mac OS 9 ATI RAVE driver.
+         * Return 0x7F (all 7 FIFO bits set, no busy/active bits) so checkDevice
+         * sees a fully idle, capable 3D engine. */
+        val = 0x0000007F;
         break;
     case PM4_STAT:
         val = 0; /* engine idle */
