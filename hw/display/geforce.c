@@ -869,7 +869,8 @@ static void nv_vga_realize(PCIDevice *dev, Error **errp)
     if (!s->dev_id)    s->dev_id    = PCI_DEVICE_ID_NV_GEFORCE3;
     if (!s->card_type) s->card_type = NV_CARD_NV20;
     if (!vga->vram_size_mb) vga->vram_size_mb = 64;
-    if (!s->bar2_size) s->bar2_size = NV_RAMIN_SIZE_NV20;
+    /* No bar2_size fallback: NV15/NV20/NV35 have no BAR2 (RAMIN is via BAR0
+     * 0x700000). Only NV40 sets bar2_size, done from nv_model_tab above. */
 
     pci_set_word(dev->config + PCI_DEVICE_ID, s->dev_id);
 
