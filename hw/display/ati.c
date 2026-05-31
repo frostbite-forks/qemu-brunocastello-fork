@@ -282,9 +282,6 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
     ATIVGAState *s = opaque;
     uint32_t val = 0;
 
-    fprintf(stderr, "ati_mm_read:  size=%u addr=0x%04"HWADDR_PRIx" (%s)\n",
-            size, addr, ati_reg_name(addr & ~3ULL));
-
     switch (addr) {
     case MM_INDEX:
         val = s->regs.mm_index;
@@ -412,7 +409,10 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
         val = 0x0000007F;
         break;
     case PM4_STAT:
-        val = 0; /* engine idle */
+        /* bits[11:0] = free FIFO entries; bits 16,31 = busy flags.
+         * 0 free entries would cause the Mac OS 9 ATI RAVE driver to spin
+         * forever waiting for FIFO space before submitting any commands. */
+        val = 0x0FFF;
         break;
     case PM4_BUFFER_DL_RPTR:
         val = s->pm4.rptr;
@@ -577,10 +577,28 @@ static uint64_t ati_mm_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     }
     if (addr < CUR_OFFSET || addr > CUR_CLR1 || ATI_DEBUG_HW_CURSOR) {
-        trace_ati_mm_read(size, addr, ati_reg_name(addr & ~3ULL), val);
-        fprintf(stderr, "ati_mm_read:  size=%u addr=0x%04"HWADDR_PRIx
-                " (%s) -> 0x%"PRIx64"\n",
-                size, addr, ati_reg_name(addr & ~3ULL), val);
+        /* Spin-loop detection: suppress repeated reads of same addr to avoid
+         * filling the log; still report every power-of-10 occurrence. */
+        static hwaddr ati_spin_addr = (hwaddr)-1;
+        static int    ati_spin_cnt  = 0;
+        if (addr == ati_spin_addr) {
+            ati_spin_cnt++;
+            int n = ati_spin_cnt;
+            if (n == 10 || n == 100 || n == 1000 || n == 10000 ||
+                n == 100000 || (n % 1000000 == 0)) {
+                fprintf(stderr,
+                        "ati_mm_read: SPIN[%d] addr=0x%04"HWADDR_PRIx
+                        " (%s) -> 0x%"PRIx64"\n",
+                        ati_spin_cnt, addr, ati_reg_name(addr & ~3ULL), val);
+            }
+        } else {
+            ati_spin_addr = addr;
+            ati_spin_cnt  = 0;
+            trace_ati_mm_read(size, addr, ati_reg_name(addr & ~3ULL), val);
+            fprintf(stderr, "ati_mm_read:  size=%u addr=0x%04"HWADDR_PRIx
+                    " (%s) -> 0x%"PRIx64"\n",
+                    size, addr, ati_reg_name(addr & ~3ULL), val);
+        }
     }
     return val;
 }
@@ -1239,6 +1257,11 @@ static void ati_vga_realize(PCIDevice *dev, Error **errp)
     ATIVGAState *s = ATI_VGA(dev);
     VGACommonState *vga = &s->vga;
     I2CBus *i2cbus;
+
+    /* Make stderr unbuffered so every log line appears immediately even when
+     * redirected to a file.  Without this, a spin-loop in the Mac OS 9 ATI
+     * RAVE driver leaves the diagnosis log empty until the stdio buffer fills. */
+    setvbuf(stderr, NULL, _IONBF, 0);
 
     s->render = NULL;
 
