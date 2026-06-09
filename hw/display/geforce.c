@@ -904,6 +904,9 @@ static void nv_vga_realize(PCIDevice *dev, Error **errp)
     /* ---- BAR0: 16 MiB MMIO register window ------------------------------ */
     memory_region_init_io(&s->mmio, OBJECT(s), &nv_mmio_ops, s,
                           "nv.mmio", NV_PNPMMIO_SIZE);
+    /* qemu_vga.ndrv talks to Bochs DISPI via BAR0+0x500 (same as pci-vga/ati). */
+    pci_std_vga_mmio_region_init(&s->vga, OBJECT(s), &s->mmio, s->mmio_std_vga,
+                                 true, false);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_MEM_PREFETCH, &s->mmio);
 
     /* ---- BAR1: VRAM linear aperture (prefetchable) ----------------------- */

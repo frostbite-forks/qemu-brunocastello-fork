@@ -188,6 +188,7 @@ struct NVVGAState {
 
     /* ---- memory regions ------------------------------------------------- */
     MemoryRegion mmio;       /* BAR0: 16 MiB NV register window */
+    MemoryRegion mmio_std_vga[4]; /* BAR0+0x400/0x500 Bochs VBE for qemu_vga.ndrv */
     MemoryRegion vram_aper;  /* BAR1: linear VRAM aperture (prefetchable) */
     MemoryRegion ramin_mr;   /* BAR2: RAMIN/instance memory window */
     MemoryRegion io;         /* VGA legacy I/O port alias */

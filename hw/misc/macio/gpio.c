@@ -81,6 +81,17 @@ void macio_set_gpio(MacIOGPIOState *s, uint32_t gpio, bool state)
         }
         break;
 
+    case 4:
+        /* Active low, CPU1 reset */
+        if (!state) {
+            trace_macio_gpio_irq_assert(gpio);
+            qemu_irq_raise(s->gpio_extirqs[gpio]);
+        } else {
+            trace_macio_gpio_irq_deassert(gpio);
+            qemu_irq_lower(s->gpio_extirqs[gpio]);
+        }
+        break;
+
     case 9:
         /* Edge, triggered by NMI below */
         if (state) {
@@ -120,7 +131,14 @@ static void macio_gpio_write(void *opaque, hwaddr addr, uint64_t value,
             ibit = s->gpio_regs[addr] & IN_DATA;
         }
 
-        s->gpio_regs[addr] = value | ibit;
+        if (addr == 4) {
+            if (!(value & OUT_ENABLE)) {
+                ibit = 1; /* high unless driven low */
+            }
+            macio_set_gpio(s, addr, ibit);
+        } else {
+            s->gpio_regs[addr] = value | ibit;
+        }
     }
 }
 
@@ -186,6 +204,7 @@ static void macio_gpio_reset(DeviceState *dev)
 
     /* GPIO 1 is up by default */
     macio_set_gpio(s, 1, true);
+    macio_set_gpio(s, 4, true);
 }
 
 static void macio_gpio_nmi(NMIState *n, int cpu_index, Error **errp)
