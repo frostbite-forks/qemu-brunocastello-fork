@@ -35,10 +35,15 @@ void ati_3d_flush(ATIVGAState *s)
         return;
     }
 
-    /* Derive framebuffer dimensions from VBE regs (set by ati_vga_switch_mode) */
+    /* Derive framebuffer dimensions — prefer VBE regs (set by NDRV at boot),
+     * fall back to ATI CRTC regs (used by the native RAVE driver). */
     uint32_t fb_w = s->vga.vbe_regs[VBE_DISPI_INDEX_XRES];
     uint32_t fb_h = s->vga.vbe_regs[VBE_DISPI_INDEX_YRES];
     uint32_t bpp  = s->vga.vbe_regs[VBE_DISPI_INDEX_BPP];
+    if ((!fb_w || !fb_h) && s->regs.crtc_h_total_disp) {
+        fb_w = ((s->regs.crtc_h_total_disp >> 16) + 1u) * 8u;
+        fb_h = (s->regs.crtc_v_total_disp >> 16) + 1u;
+    }
     if (!bpp) bpp = 32;
     uint32_t bypp = (bpp <= 8) ? 1u : (bpp <= 16) ? 2u : 4u;
     uint32_t pitch_px = (s->regs.crtc_pitch & 0x7ffu) * 8u;
