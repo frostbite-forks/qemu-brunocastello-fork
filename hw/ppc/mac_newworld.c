@@ -83,6 +83,10 @@
 #define CLOCKFREQ (900UL * 1000UL * 1000UL)
 #define BUSFREQ (100UL * 1000UL * 1000UL)
 
+/* PowerMac3,3 "Power Macintosh G4 (Gigabit Ethernet)" defaults */
+#define POWERMAC3_3_CLOCKFREQ (500UL * 1000UL * 1000UL)
+#define POWERMAC3_3_BUSFREQ   (100UL * 1000UL * 1000UL)
+
 #define NDRV_VGA_FILENAME "qemu_vga.ndrv"
 
 #define PROM_FILENAME "openbios-ppc"
@@ -93,6 +97,7 @@
 #define KERNEL_GAP       0x00100000
 
 #define TYPE_CORE99_MACHINE MACHINE_TYPE_NAME("mac99")
+#define TYPE_POWERMAC3_3_MACHINE MACHINE_TYPE_NAME("powermac3_3")
 typedef struct Core99MachineState Core99MachineState;
 DECLARE_INSTANCE_CHECKER(Core99MachineState, CORE99_MACHINE,
                          TYPE_CORE99_MACHINE)
@@ -678,9 +683,446 @@ static const TypeInfo core99_machine_info = {
     },
 };
 
+/*
+ * PowerMac3,3 - "Power Macintosh G4 (Gigabit Ethernet)" (July 2000)
+ *
+ * Dual PowerPC 7400 (G4) @ 450 or 500 MHz, up to 2 GB PC100 SDRAM,
+ * ATI Rage 128 Pro (AGP 2x), and the first Mac with built-in Gigabit
+ * Ethernet (Apple GMAC / "sungem"). UniNorth host bridge, KeyLargo MacIO
+ * with VIA-PMU. 32-bit only - no U3/970 variant exists for this model.
+ */
+static void ppc_powermac3_3_init(MachineState *machine)
+{
+    Core99MachineState *core99_machine = CORE99_MACHINE(machine);
+    MachineClass *mc = MACHINE_GET_CLASS(machine);
+    PowerPCCPU **cpus = NULL;
+    CPUPPCState *env = NULL;
+    char *filename;
+    IrqLines *openpic_irqs;
+    int i, j, k, ppc_boot_device, bios_size = -1;
+    const char *bios_name = machine->firmware ?: PROM_FILENAME;
+    MemoryRegion *bios = g_new(MemoryRegion, 1);
+    hwaddr kernel_base = 0, initrd_base = 0, cmdline_base = 0;
+    long kernel_size = 0, initrd_size = 0;
+    PCIBus *pci_bus;
+    bool has_pmu, has_adb;
+    Object *macio;
+    MACIOIDEState *macio_ide;
+    BusState *adb_bus;
+    MacIONVRAMState *nvr;
+    DriveInfo *hd[MAX_IDE_BUS * MAX_IDE_DEVS];
+    void *fw_cfg;
+    SysBusDevice *s;
+    DeviceState *dev, *pic_dev, *uninorth_pci_dev;
+    DeviceState *uninorth_internal_dev, *uninorth_agp_dev;
+    hwaddr nvram_addr = 0xFFF04000;
+    uint64_t tbfreq = kvm_enabled() ? kvmppc_get_tbfreq() : TBFREQ;
+
+    /* init CPUs - dual G4 7400 */
+    cpus = g_new0(PowerPCCPU *, machine->smp.cpus);
+    for (i = 0; i < machine->smp.cpus; i++) {
+        cpus[i] = POWERPC_CPU(cpu_create(machine->cpu_type));
+        /* Secondary CPUs start halted; the primary is kicked by the firmware */
+        object_property_set_bool(OBJECT(cpus[i]), "start-powered-off", i != 0,
+                                 &error_abort);
+        /* Set time-base frequency to 25 MHz (per PowerMac3,3 device tree) */
+        cpu_ppc_tb_init(&cpus[i]->env, TBFREQ);
+        qemu_register_reset(ppc_core99_reset, cpus[i]);
+    }
+    env = &cpus[0]->env;
+
+    /* PowerMac3,3 only supports 32-bit PowerPC G4 CPUs */
+    if (PPC_INPUT(env) != PPC_FLAGS_INPUT_6xx) {
+        error_report("PowerMac3,3 only supports PowerPC 6xx/7xx/7400 (G4) CPUs");
+        exit(1);
+    }
+
+    /* allocate RAM (up to 2 GiB of PC100 SDRAM on real hardware) */
+    if (machine->ram_size > 2 * GiB) {
+        error_report("RAM size more than 2 GiB is not supported");
+        exit(1);
+    }
+    memory_region_add_subregion(get_system_memory(), 0, machine->ram);
+
+    /* allocate and load firmware ROM */
+    memory_region_init_rom(bios, NULL, "ppc_core99.bios", PROM_SIZE,
+                           &error_fatal);
+    memory_region_add_subregion(get_system_memory(), PROM_BASE, bios);
+
+    filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, bios_name);
+    if (filename) {
+        /* Load OpenBIOS (ELF) */
+        bios_size = load_elf(filename, NULL, NULL, NULL, NULL,
+                             NULL, NULL, NULL,
+                             ELFDATA2MSB, PPC_ELF_MACHINE, 0, 0);
+
+        if (bios_size <= 0) {
+            /* or load binary ROM image */
+            bios_size = load_image_targphys(filename, PROM_BASE, PROM_SIZE,
+                                            &error_fatal);
+        }
+        g_free(filename);
+    }
+    if (bios_size < 0 || bios_size > PROM_SIZE) {
+        error_report("could not load PowerPC bios '%s'", bios_name);
+        exit(1);
+    }
+
+    if (machine->kernel_filename) {
+        kernel_base = KERNEL_LOAD_ADDR;
+        kernel_size = load_elf(machine->kernel_filename, NULL,
+                               translate_kernel_address, NULL, NULL, NULL,
+                               NULL, NULL, ELFDATA2MSB, PPC_ELF_MACHINE, 0, 0);
+        if (kernel_size < 0) {
+            kernel_size = load_aout(machine->kernel_filename, kernel_base,
+                                    machine->ram_size - kernel_base,
+                                    true, TARGET_PAGE_SIZE);
+        }
+        if (kernel_size < 0) {
+            kernel_size = load_image_targphys(machine->kernel_filename,
+                                              kernel_base,
+                                              machine->ram_size - kernel_base,
+                                              &error_fatal);
+        }
+        /* load initrd */
+        if (machine->initrd_filename) {
+            initrd_base = TARGET_PAGE_ALIGN(kernel_base + kernel_size +
+                                            KERNEL_GAP);
+            initrd_size = load_image_targphys(machine->initrd_filename,
+                                              initrd_base,
+                                              machine->ram_size - initrd_base,
+                                              &error_fatal);
+            cmdline_base = TARGET_PAGE_ALIGN(initrd_base + initrd_size);
+        } else {
+            cmdline_base = TARGET_PAGE_ALIGN(kernel_base + kernel_size +
+                                             KERNEL_GAP);
+        }
+        ppc_boot_device = 'm';
+    } else {
+        ppc_boot_device = '\0';
+        for (i = 0; machine->boot_config.order[i] != '\0'; i++) {
+            if (machine->boot_config.order[i] >= 'c' &&
+                machine->boot_config.order[i] <= 'f') {
+                ppc_boot_device = machine->boot_config.order[i];
+                break;
+            }
+        }
+        if (ppc_boot_device == '\0') {
+            error_report("No valid boot device for PowerMac3,3 machine");
+            exit(1);
+        }
+    }
+
+    /* OpenPIC IRQ wiring (G4/6xx only) */
+    openpic_irqs = g_new0(IrqLines, machine->smp.cpus);
+    for (i = 0; i < machine->smp.cpus; i++) {
+        dev = DEVICE(cpus[i]);
+        openpic_irqs[i].irq[OPENPIC_OUTPUT_INT] =
+            qdev_get_gpio_in(dev, PPC6xx_INPUT_INT);
+        openpic_irqs[i].irq[OPENPIC_OUTPUT_CINT] =
+            qdev_get_gpio_in(dev, PPC6xx_INPUT_INT);
+        openpic_irqs[i].irq[OPENPIC_OUTPUT_MCK] =
+            qdev_get_gpio_in(dev, PPC6xx_INPUT_MCP);
+        openpic_irqs[i].irq[OPENPIC_OUTPUT_DEBUG] = NULL;
+        openpic_irqs[i].irq[OPENPIC_OUTPUT_RESET] =
+            qdev_get_gpio_in(dev, PPC6xx_INPUT_HRESET);
+    }
+
+    /* UniNorth init - PowerMac3,3 uses the UniNorth (not U3) host bridge */
+    s = SYS_BUS_DEVICE(qdev_new(TYPE_UNI_NORTH));
+    sysbus_realize_and_unref(s, &error_fatal);
+    memory_region_add_subregion(get_system_memory(), 0xf8000000,
+                                sysbus_mmio_get_region(s, 0));
+
+    /* UniNorth AGP bus - hosts the ATI Rage 128 Pro at /pci@f0000000 */
+    uninorth_agp_dev = qdev_new(TYPE_UNI_NORTH_AGP_HOST_BRIDGE);
+    s = SYS_BUS_DEVICE(uninorth_agp_dev);
+    sysbus_realize_and_unref(s, &error_fatal);
+    sysbus_mmio_map(s, 0, 0xf0800000);
+    sysbus_mmio_map(s, 1, 0xf0c00000);
+
+    /* UniNorth internal bus - the gigabit ethernet sits here at /pci@f4000000 */
+    uninorth_internal_dev = qdev_new(TYPE_UNI_NORTH_INTERNAL_PCI_HOST_BRIDGE);
+    s = SYS_BUS_DEVICE(uninorth_internal_dev);
+    sysbus_realize_and_unref(s, &error_fatal);
+    sysbus_mmio_map(s, 0, 0xf4800000);
+    sysbus_mmio_map(s, 1, 0xf4c00000);
+
+    /* UniNorth main bus - MacIO/USB/Firewire live here at /pci@f2000000 */
+    uninorth_pci_dev = qdev_new(TYPE_UNI_NORTH_PCI_HOST_BRIDGE);
+    qdev_prop_set_uint32(uninorth_pci_dev, "ofw-addr", 0xf2000000);
+    s = SYS_BUS_DEVICE(uninorth_pci_dev);
+    sysbus_realize_and_unref(s, &error_fatal);
+    sysbus_mmio_map(s, 0, 0xf2800000);
+    sysbus_mmio_map(s, 1, 0xf2c00000);
+    /* PCI hole */
+    memory_region_add_subregion(get_system_memory(), 0x80000000,
+                                sysbus_mmio_get_region(s, 2));
+    /* Register 8 MB of ISA IO space */
+    memory_region_add_subregion(get_system_memory(), 0xf2000000,
+                                sysbus_mmio_get_region(s, 3));
+
+    machine->usb |= defaults_enabled() && !machine->usb_disabled;
+    /* PowerMac3,3 always uses VIA-PMU (no Cuda); ADB depends on user via= option */
+    has_pmu = (core99_machine->via_config != CORE99_VIA_CONFIG_CUDA);
+    has_adb = (core99_machine->via_config == CORE99_VIA_CONFIG_CUDA ||
+               core99_machine->via_config == CORE99_VIA_CONFIG_PMU_ADB);
+
+    pci_bus = PCI_HOST_BRIDGE(uninorth_pci_dev)->bus;
+
+    /* MacIO (KeyLargo on real PowerMac3,3) */
+    macio = OBJECT(pci_new(-1, TYPE_NEWWORLD_MACIO));
+    dev = DEVICE(macio);
+    qdev_prop_set_uint64(dev, "frequency", tbfreq);
+    qdev_prop_set_bit(dev, "has-pmu", has_pmu);
+    qdev_prop_set_bit(dev, "has-adb", has_adb);
+
+    dev = DEVICE(object_resolve_path_component(macio, "escc"));
+    qdev_prop_set_chr(dev, "chrA", serial_hd(0));
+    qdev_prop_set_chr(dev, "chrB", serial_hd(1));
+
+    pic_dev = DEVICE(object_resolve_path_component(macio, "pic"));
+    qdev_prop_set_uint32(pic_dev, "nb_cpus", machine->smp.cpus);
+
+    pci_realize_and_unref(PCI_DEVICE(macio), pci_bus, &error_fatal);
+
+    /* Wire GPIO 4 (CPU reset line) from MacIO to each secondary CPU */
+    s = SYS_BUS_DEVICE(object_resolve_path_component(macio, "gpio"));
+    for (i = 1; i < machine->smp.cpus; i++) {
+        qemu_irq kick = qemu_allocate_irq(cpu_kick, cpus[i], i);
+        sysbus_connect_irq(s, 4, kick);
+    }
+
+    /* Route UniNorth main PCI bus IRQs to OpenPIC pins 0x1b..0x1e */
+    for (i = 0; i < 4; i++) {
+        qdev_connect_gpio_out(uninorth_pci_dev, i,
+                              qdev_get_gpio_in(pic_dev, 0x1b + i));
+    }
+    /* AGP bus */
+    for (i = 0; i < 4; i++) {
+        qdev_connect_gpio_out(uninorth_agp_dev, i,
+                              qdev_get_gpio_in(pic_dev, 0x1b + i));
+    }
+    /* Internal (gigabit ethernet) bus */
+    for (i = 0; i < 4; i++) {
+        qdev_connect_gpio_out(uninorth_internal_dev, i,
+                              qdev_get_gpio_in(pic_dev, 0x1b + i));
+    }
+
+    /* OpenPIC */
+    s = SYS_BUS_DEVICE(pic_dev);
+    k = 0;
+    for (i = 0; i < machine->smp.cpus; i++) {
+        for (j = 0; j < OPENPIC_OUTPUT_NB; j++) {
+            sysbus_connect_irq(s, k++, openpic_irqs[i].irq[j]);
+        }
+    }
+    g_free(openpic_irqs);
+    g_free(cpus);
+
+    /* IDE drives - KeyLargo provides ata-4 (UDMA66) + ata-3 controllers */
+    ide_drive_get(hd, ARRAY_SIZE(hd));
+
+    macio_ide = MACIO_IDE(object_resolve_path_component(macio, "ide[0]"));
+    macio_ide_init_drives(macio_ide, hd);
+
+    macio_ide = MACIO_IDE(object_resolve_path_component(macio, "ide[1]"));
+    macio_ide_init_drives(macio_ide, &hd[MAX_IDE_DEVS]);
+
+    if (has_adb) {
+        if (has_pmu) {
+            dev = DEVICE(object_resolve_path_component(macio, "pmu"));
+        } else {
+            dev = DEVICE(object_resolve_path_component(macio, "cuda"));
+        }
+
+        adb_bus = qdev_get_child_bus(dev, "adb.0");
+        dev = qdev_new(TYPE_ADB_KEYBOARD);
+        qdev_realize_and_unref(dev, adb_bus, &error_fatal);
+
+        dev = qdev_new(TYPE_ADB_MOUSE);
+        qdev_realize_and_unref(dev, adb_bus, &error_fatal);
+    }
+
+    if (machine->usb) {
+        /* KeyLargo USB - two OHCI controllers on real hardware */
+        pci_create_simple(pci_bus, -1, "pci-ohci");
+
+        if (!has_adb) {
+            USBBus *usb_bus;
+
+            usb_bus = USB_BUS(object_resolve_type_unambiguous(TYPE_USB_BUS,
+                                                              &error_abort));
+            usb_create_simple(usb_bus, "usb-kbd");
+            usb_create_simple(usb_bus, "usb-mouse");
+        }
+    }
+
+    /*
+     * VGA: PowerMac3,3 shipped with an ATI Rage 128 Pro on the AGP bus.
+     * If the user did not pick a specific -vga model, instantiate the
+     * Rage 128 Pro on the AGP host bridge to match real hardware.
+     * Otherwise fall through to pci_vga_init so -vga std/cirrus/etc. work.
+     */
+    if (vga_interface_type == VGA_NONE) {
+        PCIBus *agp_bus = PCI_HOST_BRIDGE(uninorth_agp_dev)->bus;
+        dev = DEVICE(pci_new(-1, "ati-vga"));
+        qdev_prop_set_string(dev, "model", "rage128p");
+        pci_realize_and_unref(PCI_DEVICE(dev), agp_bus, &error_fatal);
+        vga_interface_created = true;
+    } else {
+        pci_vga_init(pci_bus);
+    }
+
+    if (!graphic_width) {
+        graphic_width = 800;
+    }
+    if (!graphic_height) {
+        graphic_height = 600;
+    }
+    if (!graphic_depth) {
+        graphic_depth = 32;
+    }
+    if (graphic_depth != 15 && graphic_depth != 32 && graphic_depth != 8) {
+        graphic_depth = 15;
+    }
+
+    /* Gigabit Ethernet - Apple GMAC ("sungem") on UniNorth internal bus */
+    pci_init_nic_devices(pci_bus, mc->default_nic);
+
+    /* NewWorld NVRAM lives outside MacIO */
+    if (kvm_enabled() && qemu_real_host_page_size() > 4096) {
+        nvram_addr = 0xFFE00000;
+    }
+    dev = qdev_new(TYPE_MACIO_NVRAM);
+    qdev_prop_set_uint32(dev, "size", MACIO_NVRAM_SIZE);
+    qdev_prop_set_uint32(dev, "it_shift", 1);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, nvram_addr);
+    nvr = MACIO_NVRAM(dev);
+    pmac_format_nvram_partition(nvr, MACIO_NVRAM_SIZE);
+
+    /* fw_cfg - reports PowerMac3,3 clock/bus frequencies to OpenBIOS */
+    dev = qdev_new(TYPE_FW_CFG_MEM);
+    fw_cfg = FW_CFG(dev);
+    qdev_prop_set_uint32(dev, "data_width", 1);
+    qdev_prop_set_bit(dev, "dma_enabled", false);
+    object_property_add_child(OBJECT(machine), TYPE_FW_CFG, OBJECT(fw_cfg));
+    s = SYS_BUS_DEVICE(dev);
+    sysbus_realize_and_unref(s, &error_fatal);
+    sysbus_mmio_map(s, 0, CFG_ADDR);
+    sysbus_mmio_map(s, 1, CFG_ADDR + 2);
+
+    fw_cfg_add_i16(fw_cfg, FW_CFG_NB_CPUS, (uint16_t)machine->smp.cpus);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_MAX_CPUS, (uint16_t)machine->smp.max_cpus);
+    fw_cfg_add_i64(fw_cfg, FW_CFG_RAM_SIZE, (uint64_t)machine->ram_size);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_MACHINE_ID, ARCH_MAC99);
+    fw_cfg_add_i32(fw_cfg, FW_CFG_KERNEL_ADDR, kernel_base);
+    fw_cfg_add_i32(fw_cfg, FW_CFG_KERNEL_SIZE, kernel_size);
+    if (machine->kernel_cmdline) {
+        fw_cfg_add_i32(fw_cfg, FW_CFG_KERNEL_CMDLINE, cmdline_base);
+        pstrcpy_targphys("cmdline", cmdline_base, TARGET_PAGE_SIZE,
+                         machine->kernel_cmdline);
+    } else {
+        fw_cfg_add_i32(fw_cfg, FW_CFG_KERNEL_CMDLINE, 0);
+    }
+    fw_cfg_add_i32(fw_cfg, FW_CFG_INITRD_ADDR, initrd_base);
+    fw_cfg_add_i32(fw_cfg, FW_CFG_INITRD_SIZE, initrd_size);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_BOOT_DEVICE, ppc_boot_device);
+
+    fw_cfg_add_i16(fw_cfg, FW_CFG_PPC_WIDTH, graphic_width);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_PPC_HEIGHT, graphic_height);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_PPC_DEPTH, graphic_depth);
+
+    fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_VIACONFIG, core99_machine->via_config);
+
+    fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_IS_KVM, kvm_enabled());
+    if (kvm_enabled()) {
+        uint8_t *hypercall;
+
+        hypercall = g_malloc(16);
+        kvmppc_get_hypercall(env, hypercall, 16);
+        fw_cfg_add_bytes(fw_cfg, FW_CFG_PPC_KVM_HC, hypercall, 16);
+        fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_KVM_PID, getpid());
+    }
+    fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_TBFREQ, tbfreq);
+    /* PowerMac3,3: 500 MHz CPU clock, 100 MHz system bus */
+    fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_CLOCKFREQ, POWERMAC3_3_CLOCKFREQ);
+    fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_BUSFREQ, POWERMAC3_3_BUSFREQ);
+    fw_cfg_add_i32(fw_cfg, FW_CFG_PPC_NVRAM_ADDR, nvram_addr);
+
+    /* MacOS NDRV VGA driver */
+    filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, NDRV_VGA_FILENAME);
+    if (filename) {
+        gchar *ndrv_file;
+        gsize ndrv_size;
+
+        if (g_file_get_contents(filename, &ndrv_file, &ndrv_size, NULL)) {
+            fw_cfg_add_file(fw_cfg, "ndrv/qemu_vga.ndrv", ndrv_file, ndrv_size);
+        }
+        g_free(filename);
+    }
+
+    qemu_register_boot_set(fw_cfg_boot_set, fw_cfg);
+}
+
+static void powermac3_3_machine_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    FWPathProviderClass *fwc = FW_PATH_PROVIDER_CLASS(oc);
+
+    mc->desc = "Power Macintosh G4 (Gigabit Ethernet) (PowerMac3,3)";
+    mc->init = ppc_powermac3_3_init;
+    mc->block_default_type = IF_IDE;
+    mc->min_cpus = 1;
+    mc->max_cpus = 2;
+    mc->default_cpus = 2;
+    mc->default_boot_order = "cd";
+    /* default_display is "std" so -vga std/cirrus/... still works; the init
+     * function instantiates the real Rage 128 Pro on AGP when no -vga is set */
+    mc->default_display = "std";
+    mc->default_nic = "sungem";
+    mc->kvm_type = core99_kvm_type;
+    /* 32-bit G4 only - real PowerMac3,3 shipped with PowerPC 7400 v2.9 */
+    mc->default_cpu_type = POWERPC_CPU_TYPE_NAME("7400_v2.9");
+    mc->valid_cpu_types = (const char *const []) {
+        POWERPC_CPU_TYPE_NAME("7400_v2.9"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.8"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.7"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.6"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.2"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.1"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.0"),
+        POWERPC_CPU_TYPE_NAME("7400_v1.1"),
+        POWERPC_CPU_TYPE_NAME("7400_v1.0"),
+        NULL
+    };
+    /* Real machine shipped with up to 2 GiB PC100 SDRAM */
+    mc->default_ram_size = 512 * MiB;
+    mc->default_ram_id = "ppc_core99.ram";
+    mc->ignore_boot_device_suffixes = true;
+    fwc->get_dev_path = core99_fw_dev_path;
+}
+
+static void powermac3_3_instance_init(Object *obj)
+{
+    Core99MachineState *cms = CORE99_MACHINE(obj);
+
+    /* Override the parent's CUDA default - PowerMac3,3 uses VIA-PMU */
+    cms->via_config = CORE99_VIA_CONFIG_PMU;
+}
+
+static const TypeInfo powermac3_3_machine_info = {
+    .name          = TYPE_POWERMAC3_3_MACHINE,
+    .parent        = TYPE_CORE99_MACHINE,
+    .class_init    = powermac3_3_machine_class_init,
+    .instance_init = powermac3_3_instance_init,
+};
+
 static void mac_machine_register_types(void)
 {
     type_register_static(&core99_machine_info);
+    type_register_static(&powermac3_3_machine_info);
 }
 
 type_init(mac_machine_register_types)
