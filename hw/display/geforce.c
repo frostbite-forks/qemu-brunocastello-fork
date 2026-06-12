@@ -2036,6 +2036,26 @@ static void nv_switch_mode(NVVGAState *s)
     uint8_t depth = s->crtc_reg[0x28] & 0x7f;
 
     if (depth == 0) {
+        /*
+         * The NV CRTC "depth" register (0x28) is zero, i.e. this NV-private
+         * mode-set path is not in use.  On NV20 (and any guest using the
+         * standard Bochs VBE register window at BAR0+0x500) the display mode
+         * is programmed directly through the VBE registers, NOT through the
+         * NV CRTC extended regs.  Such a guest still pokes some NV CRTC regs
+         * (cursor/DDC/bank), each of which lands here -- and unconditionally
+         * disabling VBE would tear down the mode the guest just set up via
+         * the VBE port, leaving scanout to fall back to the legacy VGA CRTC
+         * geometry and producing a garbled, comb-striped, mis-strided image.
+         *
+         * So only force VBE off when it was actually enabled through *this*
+         * NV path.  If VBE is currently enabled but we never enabled it here,
+         * the std-VBE path owns the display -- leave it alone.
+         */
+        if ((s->vga.vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) &&
+            !s->mode_needs_update) {
+            return;
+        }
+        s->mode_needs_update = false;
         vbe_ioport_write_index(&s->vga, 0, VBE_DISPI_INDEX_ENABLE);
         vbe_ioport_write_data(&s->vga, 0, VBE_DISPI_DISABLED);
         return;
@@ -2075,6 +2095,10 @@ static void nv_switch_mode(NVVGAState *s)
     }
 
     s->disp_offset = fb_off;
+
+    /* This NV-private path now owns the display; record it so a later
+     * depth==0 write from this same path tears the mode down. */
+    s->mode_needs_update = true;
 
     vbe_ioport_write_index(&s->vga, 0, VBE_DISPI_INDEX_ENABLE);
     vbe_ioport_write_data(&s->vga, 0, VBE_DISPI_DISABLED);
