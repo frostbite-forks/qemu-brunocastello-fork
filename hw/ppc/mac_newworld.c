@@ -1068,6 +1068,18 @@ static void ppc_powermac3_3_init(MachineState *machine)
 
 static void powermac3_3_machine_class_init(ObjectClass *oc, const void *data)
 {
+    static const char * const valid_cpu_types[] = {
+        POWERPC_CPU_TYPE_NAME("7400_v2.9"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.8"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.7"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.6"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.2"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.1"),
+        POWERPC_CPU_TYPE_NAME("7400_v2.0"),
+        POWERPC_CPU_TYPE_NAME("7400_v1.1"),
+        POWERPC_CPU_TYPE_NAME("7400_v1.0"),
+        NULL
+    };
     MachineClass *mc = MACHINE_CLASS(oc);
     FWPathProviderClass *fwc = FW_PATH_PROVIDER_CLASS(oc);
 
@@ -1085,18 +1097,7 @@ static void powermac3_3_machine_class_init(ObjectClass *oc, const void *data)
     mc->kvm_type = core99_kvm_type;
     /* 32-bit G4 only - real PowerMac3,3 shipped with PowerPC 7400 v2.9 */
     mc->default_cpu_type = POWERPC_CPU_TYPE_NAME("7400_v2.9");
-    mc->valid_cpu_types = (const char *const []) {
-        POWERPC_CPU_TYPE_NAME("7400_v2.9"),
-        POWERPC_CPU_TYPE_NAME("7400_v2.8"),
-        POWERPC_CPU_TYPE_NAME("7400_v2.7"),
-        POWERPC_CPU_TYPE_NAME("7400_v2.6"),
-        POWERPC_CPU_TYPE_NAME("7400_v2.2"),
-        POWERPC_CPU_TYPE_NAME("7400_v2.1"),
-        POWERPC_CPU_TYPE_NAME("7400_v2.0"),
-        POWERPC_CPU_TYPE_NAME("7400_v1.1"),
-        POWERPC_CPU_TYPE_NAME("7400_v1.0"),
-        NULL
-    };
+    mc->valid_cpu_types = valid_cpu_types;
     /* Real machine shipped with up to 2 GiB PC100 SDRAM */
     mc->default_ram_size = 512 * MiB;
     mc->default_ram_id = "ppc_core99.ram";
