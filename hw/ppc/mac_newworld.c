@@ -960,11 +960,15 @@ static void ppc_powermac3_3_init(MachineState *machine)
 
     /*
      * VGA: PowerMac3,3 shipped with an ATI Rage 128 Pro on the AGP bus.
-     * If the user did not pick a specific -vga model, instantiate the
-     * Rage 128 Pro on the AGP host bridge to match real hardware.
-     * Otherwise fall through to pci_vga_init so -vga std/cirrus/etc. work.
+     * When the user did not pick a specific -vga model, instantiate the
+     * Rage 128 Pro on the AGP host bridge to match real hardware. With
+     * "-vga none" create nothing, so the user can supply their own
+     * graphics adapter via -device (e.g. geforce-vga). Otherwise fall
+     * through to pci_vga_init so -vga std/cirrus/etc. still work.
      */
     if (vga_interface_type == VGA_NONE) {
+        /* user opted out of the default VGA; honor it */
+    } else if (vga_interface_type == VGA_STD) {
         PCIBus *agp_bus = PCI_HOST_BRIDGE(uninorth_agp_dev)->bus;
         dev = DEVICE(pci_new(-1, "ati-vga"));
         qdev_prop_set_string(dev, "model", "rage128p");
