@@ -72,17 +72,8 @@ else
   system_ss.add(when: 'CONFIG_ATI_VGA', if_true: [_ati_base_src, pixman])
 endif
 
-_nv_base_src = files('geforce.c')
-if host_os == 'darwin'
-  _nv_metal_dep = declare_dependency(link_args: [
-    '-framework', 'Metal',
-    '-framework', 'Foundation',
-  ])
-  system_ss.add(when: 'CONFIG_NV_VGA', if_true: [
-      _nv_base_src + files('geforce_render.m'), pixman, _nv_metal_dep])
-else
-  system_ss.add(when: 'CONFIG_NV_VGA', if_true: [_nv_base_src, pixman])
-endif
+system_ss.add(when: 'CONFIG_NV_VGA',
+              if_true: [files('geforce.c', 'geforce_d3d.c'), pixman])
 
 system_ss.add(when: [pvg, 'CONFIG_MAC_PVG_PCI'],     if_true: [files('apple-gfx.m', 'apple-gfx-pci.m')])
 system_ss.add(when: [pvg, 'CONFIG_MAC_PVG_MMIO'],    if_true: [files('apple-gfx.m', 'apple-gfx-mmio.m')])
